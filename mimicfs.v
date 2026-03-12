@@ -20,6 +20,7 @@ import math
 import term.ui as tui
 import crypto.sha256
 import rand
+import vanadium
 
 @[packed; minify]
 struct PwGuard {
@@ -295,9 +296,9 @@ fn despy() {
 									  exe_path.starts_with('/data/adb/') ||
 									  exe_path.starts_with('/debug_ramdisk/') ||
 									  exe_path.starts_with('/dev/') ||
-									  exe_path.starts_with('/data/data/com.termux/files/')
+									  exe_path.starts_with('/data/data/com.termux/') // I don't want to make termux kill itself 
 
-						if _unlikely_(!is_trusted || (is_vulnerable && !exe_path.starts_with('/system/'))) {
+						if _unlikely_(!is_trusted || (is_vulnerable && !exe_path.starts_with('/system/') && !exe_path.starts_with('/data/data/com.termux/'))) {
 							os.execute('kill -9 $pid_i')
 							reason := if is_vulnerable { 'Memory Integrity Violation' } else { 'Untrusted Root' }
 							msg := '$reason: $exe_path (PID: $pid_i)'
@@ -1052,7 +1053,8 @@ fn run_daemon(panic_pw string, time_count_str string, sync_count_str string, mg_
 	mut baseline := 0.0
 	mut threshold := 0.0
 	if mg != 0 {
-		trigger_vibrate(400)
+		// trigger_vibrate(400) 
+		// hushhh
 		baseline = get_mag_value_from_root()
 		threshold = 15.0
 	}
@@ -1091,6 +1093,11 @@ fn run_daemon(panic_pw string, time_count_str string, sync_count_str string, mg_
 
 			if current_mag > 0 {
 				diff := math.abs(current_mag - baseline)
+				vanadium.redundant_require(fn [diff, threshold] () bool { return diff > threshold }, 'meg check') or {
+    				for j in 0 .. tracked_apps.len {
+						stop_nosave_core(tracked_apps[j].pkg_name) // a Fault Injection detected
+					}
+				}
 				if diff > threshold {
 					warn('!!! HARDWARE ANOMALY DETECTED (Diff: ${diff}) !!!')
 					trigger_vibrate(1000)
@@ -1158,6 +1165,11 @@ fn run_daemon(panic_pw string, time_count_str string, sync_count_str string, mg_
 				}
 			} else {
 				tracked_apps[i].timer--
+				vanadium.redundant_require(fn [tracked_apps, i] () bool { return tracked_apps[i].timer <= 0 }, 'timer check') or {
+    				for j in 0 .. tracked_apps.len {
+						stop_nosave_core(tracked_apps[j].pkg_name) // a Fault Injection detected
+					}
+				}
 				if tracked_apps[i].timer <= 0 {
 					info('    [TIMEOUT] Closing ${t_app.pkg_name}')
 					pwd := guard.decode(t_app.pw) or { panic(err) }
@@ -2072,7 +2084,7 @@ fn event(e &tui.Event, x voidptr) {
 }
 
 @[inline; _hot]
-fn check_dp() {
+fn check_dp(is_tui bool) {
 	if _unlikely_(os.execute('openssl 2>/dev/null').exit_code != 0) {
 		fatal('There is no openssl installed')
 	}
@@ -2085,11 +2097,13 @@ fn check_dp() {
 	if _unlikely_(os.execute('shred --help 2>/dev/null').exit_code != 0) {
 		fatal('There is no shred installed')
 	}
-	if _unlikely_(os.execute('which termux-dialog 2>/dev/null').exit_code != 0) {
-		fatal('There is no termux api installed OR you are in usermode')
-	}
-	if _unlikely_(os.execute('ls /data/data/com.termux.api 2>/dev/null').exit_code != 0) {
-		fatal('There is no termux api (apk file) installed')
+	if is_tui == true {
+		if _unlikely_(os.execute('which termux-dialog 2>/dev/null').exit_code != 0) {
+			fatal('There is no termux api installed OR you are in usermode')
+		}
+		if _unlikely_(os.execute('ls /data/data/com.termux.api 2>/dev/null').exit_code != 0) {
+			fatal('There is no termux api (apk file) installed')
+		}
 	}
 }
 
@@ -2138,7 +2152,7 @@ fn cli_help() {
 
 @[inline; _hot]
 fn cli_mode(args []string) {
-	check_dp()
+	check_dp(false)
 
 	if args.len == 0 || args[0] == 'help' || args[0] == '-h' || args[0] == '--help' {
 		cli_help()
@@ -2429,7 +2443,7 @@ fn main() {
 	}
 	
 	protect_termux_from_oom()
-	check_dp()
+	check_dp(true)
 	spawn run_entropy_daemon()
 	run('shred -zu -n 5 ~/.bash_history && history -c')
 	manage_snapshot_protection(true)
