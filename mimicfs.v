@@ -22,6 +22,10 @@ import crypto.sha256
 import rand
 import vanadium
 
+const app_name := "MimicFS"
+const app_ver := "1.5-PE"
+const app_title := "M I M I C F S"
+
 @[packed; minify]
 struct PwGuard {
 mut:
@@ -1022,7 +1026,7 @@ fn get_gui_pw(pkg string) string {
 	last_gui_call = now
 
 	uid := os.execute('stat -c %u /data/data/com.termux').output.trim_space()
-	res := os.execute('su ${uid} -c "export PATH=/data/data/com.termux/files/usr/bin; export TMPDIR=/data/data/com.termux/files/usr/tmp; termux-dialog text -p -t \'${pkg} - MimicFS\' -i \'Enter Key\'"')
+	res := os.execute('su ${uid} -c "export PATH=/data/data/com.termux/files/usr/bin; export TMPDIR=/data/data/com.termux/files/usr/tmp; termux-dialog text -p -t \'${pkg} - ${app_name}\' -i \'Enter Key\'"')
 
 	if _unlikely_(res.exit_code != 0 || !res.output.contains('"text":')) {
 		return ''
@@ -1047,7 +1051,7 @@ fn run_daemon(panic_pw string, time_count_str string, sync_count_str string, mg_
 		fatal('BAD_TIMER_CONF')
 	}
 
-	info('[MimicFS] Daemon Running ...')
+	info('[${app_name}] Daemon Running ...')
 	os.execute('su -c "dumpsys deviceidle whitelist +com.termux.api"')
 
 	mut baseline := 0.0
@@ -1615,8 +1619,8 @@ fn frame(x voidptr) {
 	t.write('│')
 	t.set_cursor_position(3 + bw + 1, 2)
 	t.write('│')
-
-	title := 'M I M I C F S'
+	
+	title := app_title
 	tx := if w > title.len + 10 { (w - title.len) / 2 - 1 } else { 5 }
 	t.set_cursor_position(tx, 2)
 	sp := sparkle(fc)
@@ -1642,7 +1646,7 @@ fn frame(x voidptr) {
 	t.set_cursor_position(3 + bw + 1, 3)
 	t.write('│')
 
-	sub := '◇ Secure Data Manager ◇'
+	sub := '     ◇ RAM Based Data Manager ◇' // Ahh I feel like CSS programmers
 	sub_x := if w > sub.len + 6 { (w - sub.len) / 2 } else { 5 }
 	t.set_cursor_position(sub_x, 3)
 	sv := breath(fc, 50, 45, 95)
@@ -1785,7 +1789,7 @@ fn frame(x voidptr) {
 	vsp := sparkle(fc + 5)
 	vr, vg, vb := rainbow(fc, 10)
 	t.set_color(r: u8(int(vr) / 6), g: u8(int(vg) / 6), b: u8(int(vb) / 6))
-	t.write(vsp + ' MimicFS 1.3-PE ' + vsp)
+	t.write(vsp + ' ${app_name} ${app_ver} ' + vsp)
 	t.reset()
 
 	t.flush()
@@ -1857,7 +1861,7 @@ fn event(e &tui.Event, x voidptr) {
 				app.selected_idx = 17
 			}
 			.enter {
-				println('')
+				for _ in 0 .. 100 { println('') }
 				os.execute('clear')
 				match app.selected_idx {
 					0 {
@@ -2125,7 +2129,7 @@ fn read_input(prompt string) string {
 
 @[inline; noreturn; _hot]
 fn cli_help() {
-	println('Usage: mimicfs <command> [args]')
+	println('Usage: ${os.args[0]} <command> [args]')
 	println('')
 	println('Commands:')
 	println('  add <pkg>            Add new app')
@@ -2162,7 +2166,7 @@ fn cli_mode(args []string) {
 	match args[0] {
 		'add' {
 			if args.len < 2 {
-				fatal('Usage: mimicfs add <package>')
+				fatal('Usage: ${os.args[0]} add <package>')
 			}
 			pkg := args[1]
 			if !is_valid_pkg(pkg) {
@@ -2180,7 +2184,7 @@ fn cli_mode(args []string) {
 		}
 		'start' {
 			if args.len < 2 {
-				fatal('Usage: mimicfs start <package>')
+				fatal('Usage: ${os.args[0]} start <package>')
 			}
 			pkg := args[1]
 			if !is_valid_pkg(pkg) {
@@ -2194,7 +2198,7 @@ fn cli_mode(args []string) {
 		}
 		'stop' {
 			if args.len < 2 {
-				fatal('Usage: mimicfs stop <package>')
+				fatal('Usage: ${os.args[0]} stop <package>')
 			}
 			pkg := args[1]
 			if !is_valid_pkg(pkg) {
@@ -2212,7 +2216,7 @@ fn cli_mode(args []string) {
 		}
 		'forcestop' {
 			if args.len < 2 {
-				fatal('Usage: mimicfs forcestop <package>')
+				fatal('Usage: ${os.args[0]} forcestop <package>')
 			}
 			pkg := args[1]
 			if !is_valid_pkg(pkg) {
@@ -2222,7 +2226,7 @@ fn cli_mode(args []string) {
 		}
 		'sync' {
 			if args.len < 2 {
-				fatal('Usage: mimicfs sync <package>')
+				fatal('Usage: ${os.args[0]} sync <package>')
 			}
 			pkg := args[1]
 			if !is_valid_pkg(pkg) {
@@ -2240,7 +2244,7 @@ fn cli_mode(args []string) {
 		}
 		'remove' {
 			if args.len < 2 {
-				fatal('Usage: mimicfs remove <package>')
+				fatal('Usage: ${os.args[0]} remove <package>')
 			}
 			pkg := args[1]
 			if !is_valid_pkg(pkg) {
@@ -2250,7 +2254,7 @@ fn cli_mode(args []string) {
 		}
 		'cpw' {
 			if args.len < 2 {
-				fatal('Usage: mimicfs cpw <package>')
+				fatal('Usage: ${os.args[0]} cpw <package>')
 			}
 			pkg := args[1]
 			if !is_valid_pkg(pkg) {
@@ -2281,11 +2285,15 @@ fn cli_mode(args []string) {
 			if pw == '' {
 				fatal('Empty password')
 			}
+			pw2 := read_pw('Current password again: ')
+			if pw != pw2 {
+				fatal('Passwords do not match')
+			}
 			lock_all_core(pw)
 		}
 		'resize' {
 			if args.len < 2 {
-				fatal('Usage: mimicfs resize <package>')
+				fatal('Usage: ${os.args[0]} resize <package>')
 			}
 			pkg := args[1]
 			if !is_valid_pkg(pkg) {
@@ -2333,7 +2341,7 @@ fn cli_mode(args []string) {
 		}
 		'extc' {
 			if _unlikely_(args.len < 3) {
-				fatal('Usage: mimicfs extc <package> <path>')
+				fatal('Usage: ${os.args[0]} extc <package> <path>')
 			}
 			pkg := args[1]
 			if _unlikely_(!is_valid_pkg(pkg)) {
@@ -2351,7 +2359,7 @@ fn cli_mode(args []string) {
 		}
 		'unextc' {
 			if _unlikely_(args.len < 2) {
-				fatal('Usage: mimicfs unextc <path>')
+				fatal('Usage: ${os.args[0]} unextc <path>')
 			}
 			path := args[1]
 			if _unlikely_(path == '') {
@@ -2361,13 +2369,16 @@ fn cli_mode(args []string) {
 		}
 		'unhide' {
 			if args.len < 2 {
-				fatal('Usage: mimicfs unhide <package>')
+				fatal('Usage: ${os.args[0]} unhide <package>')
 			}
 			pkg := args[1]
 			if !is_valid_pkg(pkg) {
 				fatal('Invalid package name')
 			}
 			unhide(pkg)
+		}
+		'r' {
+			despy()
 		}
 		else {
 			println('\x1b[31m[ERROR]\x1b[0m Unknown command: ${args[0]}')
@@ -2480,7 +2491,7 @@ fn main() {
 		user_data: app
 		frame_fn: frame
 		event_fn: event
-		window_title: 'MimicFS'
+		window_title: app_name
 	)
 	app.tui.run() or { return }
 }
