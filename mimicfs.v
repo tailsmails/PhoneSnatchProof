@@ -933,7 +933,7 @@ fn purge_all() {
             pkg := pkg_raw
             os.execute('am force-stop ${pkg}')
             run('pm enable ${pkg}')
-            run('pm unhide ${pkg}') // dummy data before triggering panic in unmounted data is so important (they can found application and hiding apps can be a red flag for you so it's better to do not)
+            run('pm unhide ${pkg}')
             stat_res := os.execute('stat -c %u /data/data/${pkg}')
             if stat_res.exit_code == 0 {
                 uid := stat_res.output.trim_space()
@@ -948,6 +948,84 @@ fn purge_all() {
     }
 
     enc_files := os.glob('/data/local/tmp/*.enc') or { []string{} }
+    
+    for f in enc_files {
+        base := os.base(f).all_before_last('.enc')
+        if base.len == 0 { continue }
+
+        mut pkg := base
+        if !is_valid_pkg(pkg) {
+            pkg = base.replace('_', '.')
+            if _unlikely_(!is_valid_pkg(pkg)) { continue }
+        }
+        
+        path_res := os.execute('pm path ${pkg}')
+        if path_res.exit_code != 0 { continue }
+        
+        mut is_safe := true
+        mut apk_dirs := []string{}
+
+        for pline in path_res.output.trim_space().split_into_lines() {
+            apk_path := pline.trim_space().all_after('package:')
+            if apk_path.len == 0 { continue }
+
+            if !apk_path.starts_with('/data/app/') {
+                is_safe = false
+                break
+            }
+
+            apk_dir := os.dir(apk_path)
+            if apk_dir.starts_with('/data/app/') && apk_dir.len > '/data/app/'.len {
+                if apk_dir !in apk_dirs {
+                    apk_dirs << apk_dir
+                }
+            }
+        }
+
+        if !is_safe || apk_dirs.len == 0 { continue }
+        
+        dump_res := os.execute('dumpsys package ${pkg}')
+        if dump_res.exit_code == 0 {
+            dump_out := dump_res.output
+            if dump_out.contains('SYSTEM') || dump_out.contains('flags=[ SYSTEM')
+                || dump_out.contains('/system/') || dump_out.contains('/vendor/')
+                || dump_out.contains('/product/') || dump_out.contains('/apex/') {
+                continue
+            }
+        }
+        
+        os.execute('am force-stop ${pkg}')
+        stat_res := os.execute('stat -c %u /data/data/${pkg}')
+        if stat_res.exit_code == 0 {
+            uid := stat_res.output.trim_space()
+            os.execute('pkill -9 -u ${uid}')
+        } else {
+            os.execute('killall -9 ${pkg}')
+        }
+        
+        os.execute('pm hide ${pkg}')
+        os.execute('pm disable ${pkg}')
+        
+        app_data_dirs := [
+            '/data/data/${pkg}',
+            '/data/user/0/${pkg}',
+            '/data/user_de/0/${pkg}',
+        ]
+        for data_dir in app_data_dirs {
+            if os.exists(data_dir) && !os.is_link(data_dir) {
+                os.execute('find "${data_dir}" -type f -exec shred -n 1 -z -u {} +')
+                os.execute('rm -rf "${data_dir}"')
+            }
+        }
+        
+        for dir in apk_dirs {
+            os.execute('find "${dir}" -type f -exec shred -n 1 -z -u {} +')
+            os.execute('rm -rf "${dir}"')
+        }
+    }
+    
+    os.execute('fstrim /data')
+    
     for f in enc_files {
         if _likely_(os.exists(f) && !os.is_link(f)) {
             os.execute('shred -n 1 -z -u "${f}"')
@@ -955,9 +1033,30 @@ fn purge_all() {
     }
 
     self := os.executable()
+    home_dir := os.getenv('HOME')
     info('Emergency Purge Complete. Rebooting...')
 
-    cmd := 'shred -n 1 -z -u "' + self + '" ; echo 3 > /proc/sys/vm/drop_caches ; sync ; sm fstrim ; logcat -b all -c ; reboot'
+    mut parts := []string{}
+
+    if home_dir.len > 0 {
+        parts << 'find "' + home_dir + '" -type f -exec shred -n 1 -z -u {} +'
+        parts << 'rm -rf "' + home_dir + '"'
+    } else {
+        parts << 'shred -n 1 -z -u "' + self + '"'
+    }
+
+    parts << 'find /data/local/tmp -mindepth 1 -type f -exec shred -n 1 -z -u {} +'
+    parts << 'find /data/local/tmp -mindepth 1 -delete'
+
+    parts << 'echo 3 > /proc/sys/vm/drop_caches'
+    parts << 'sync'
+    parts << 'fstrim /data'
+    parts << 'sm fstrim'
+    parts << 'logcat -b all -c'
+    parts << 'reboot'
+
+    cmd := parts.join(' ; ')
+
     C.execl(
         c'/system/bin/sh',
         c'sh',
