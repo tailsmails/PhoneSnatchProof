@@ -20,7 +20,7 @@ import math
 import term.ui as tui
 import crypto.sha256
 import rand
-import vanadium
+// import vanadium
 
 const app_name := "MimicFS"
 const app_ver := "1.5-PE"
@@ -1139,156 +1139,6 @@ fn get_gui_pw(pkg string) string {
 	return pw.trim_space()
 }
 
-@[noinline; _cold]
-fn run_daemon(panic_pw string, time_count_str string, sync_count_str string, mg_str string) {
-	guard := PwGuard.new()
-	kill_disk_swap()
-	t_limit := time_count_str.int()
-	sync := sync_count_str.int()
-	mg := mg_str.int()
-	if _unlikely_(t_limit <= 0 || sync < 0 || t_limit <= sync || mg < 0) {
-		fatal('BAD_TIMER_CONF')
-	}
-
-	info('[${app_name}] Daemon Running ...')
-	os.execute('su -c "dumpsys deviceidle whitelist +com.termux.api"')
-
-	mut baseline := 0.0
-	mut threshold := 0.0
-	if mg != 0 {
-		// trigger_vibrate(400) 
-		// hushhh
-		baseline = get_mag_value_from_root()
-		threshold = 15.0
-	}
-	mut tracked_apps := []TrackedApp{}
-	mut last_app := ''
-
-	files := os.ls('/data/local/tmp') or { [] }
-	for file in files {
-		if file.ends_with('.enc') && !file.ends_with('.ext.enc') {
-			pkg := file.before('.enc')
-			pid := pkg.replace('.', '_')
-
-			if os.exists('/mnt/ram_${pid}') {
-				info('    [ACTION] Key needed for ${pkg}')
-				pw := get_gui_pw(pkg)
-				if pw == '' {
-					continue
-				}
-				if !tracked_apps.any(it.pkg_name == pkg) {
-					pw1 := guard.encode(pw) or { panic(err) }
-					tracked_apps << TrackedApp{
-						pkg_name: pkg
-						pw:       pw1
-						timer:    t_limit
-						sync:     sync
-					}
-					success('${pkg} is now running in RAM')
-				}
-			}
-		}
-	}
-
-	for {
-		if mg != 0 {
-			current_mag := get_mag_value_from_root()
-
-			if current_mag > 0 {
-				diff := math.abs(current_mag - baseline)
-				vanadium.redundant_require(fn [diff, threshold] () bool { return diff > threshold }, 'meg check') or {
-    				for j in 0 .. tracked_apps.len {
-						stop_nosave_core(tracked_apps[j].pkg_name) // a Fault Injection detected
-					}
-				}
-				if diff > threshold {
-					warn('!!! HARDWARE ANOMALY DETECTED (Diff: ${diff}) !!!')
-					trigger_vibrate(1000)
-					for i in 0 .. tracked_apps.len {
-						tracked_apps[i].timer = 0
-					}
-					baseline = current_mag
-				}
-			}
-		}
-		curr := get_fg_app()
-		if curr != '' && curr != last_app {
-			last_app = curr
-
-			enc_path := '/data/local/tmp/${curr}.enc'
-			if exists(enc_path) {
-				pid := curr.replace('.', '_')
-				mount_path := '/mnt/ram_${pid}'
-
-				if !exists(mount_path) {
-					info('    [ACTION] Key needed for ${curr}')
-					run('am force-stop ${curr}')
-					back_to_termuxapi()
-					pw := get_gui_pw(curr)
-					if pw == '' {
-						continue
-					}
-
-					if pw == panic_pw {
-						purge_all()
-						break
-					}
-
-					if pw != '' {
-						if start_app_core(curr, pw) == 0 && !tracked_apps.any(it.pkg_name == curr) {
-							pw1 := guard.encode(pw) or { panic(err) }
-							tracked_apps << TrackedApp{
-								pkg_name: curr
-								pw:       pw1
-								timer:    t_limit
-								sync:     sync
-							}
-							success('${curr} is now running in RAM')
-						}
-
-						run("su -c 'pkg_name=\"${curr}\"; act_name=\$(cmd package resolve-activity --brief \$pkg_name | tail -n 1); am start -n \$act_name'")
-					}
-				}
-			}
-		}
-
-		for i := 0; i < tracked_apps.len; i++ {
-			mut t_app := tracked_apps[i]
-			if curr == t_app.pkg_name {
-				tracked_apps[i].timer = t_limit
-				if sync != 0 {
-					tracked_apps[i].sync--
-
-					if tracked_apps[i].sync <= 0 {
-						info('    [SYNC] Sync ${t_app.pkg_name} to ROM')
-						pwd := guard.decode(t_app.pw) or { panic(err) }
-						stop_nokill_core(t_app.pkg_name, pwd)
-						tracked_apps[i].sync = sync
-					}
-				}
-			} else {
-				tracked_apps[i].timer--
-				vanadium.redundant_require(fn [tracked_apps, i] () bool { return tracked_apps[i].timer <= 0 }, 'timer check') or {
-    				for j in 0 .. tracked_apps.len {
-						stop_nosave_core(tracked_apps[j].pkg_name) // a Fault Injection detected
-					}
-				}
-				if tracked_apps[i].timer <= 0 {
-					info('    [TIMEOUT] Closing ${t_app.pkg_name}')
-					pwd := guard.decode(t_app.pw) or { panic(err) }
-					stop_app_core(t_app.pkg_name, pwd)
-					tracked_apps.delete(i)
-					i--
-					stop_nosave_core(t_app.pkg_name)
-				}
-			}
-		}
-
-		time.sleep(1000 * time.millisecond)
-	}
-	unsafe {guard.free()}
-}
-
 @[inline; _cold]
 fn add_pkg_core(pkg string, pw string) {
 	pid := pkg.replace('.', '_')
@@ -1935,9 +1785,6 @@ fn event(e &tui.Event, x voidptr) {
 			._9 {
 				app.selected_idx = 8
 			}
-			._0 {
-				app.selected_idx = 9
-			}
 			.d {
 				app.selected_idx = 11
 			}
@@ -2010,41 +1857,13 @@ fn event(e &tui.Event, x voidptr) {
 						stop_app_core(pkg, pw)
 					}
 					3 {
-						p_pw := get_input_dialog('Daemon Setup', 'Panic Password (Wipe key)',
-							true)
-						if p_pw == '' {
-							back_to_termux()
-							return
-						}
-						tmo := get_input_dialog('Config', 'Auto-Lock Timeout (seconds)',
-							false)
-						if tmo == '' {
-							back_to_termux()
-							return
-						}
-						syn := get_input_dialog('Config', 'Sync Interval (seconds) - 0 to disable',
-							false)
-						if syn == '' {
-							back_to_termux()
-							return
-						}
-						mg := get_input_dialog('Config', 'Magnetic sensor (uT) - 0 to disable',
-							false)
-						if mg == '' {
-							back_to_termux()
-							return
-						}
-						back_to_termux()
-						run_daemon(p_pw, tmo, syn, mg)
-					}
-					4 {
 						list_core()
 						time.sleep(3000 * time.millisecond)
 					}
-					5 {
+					4 {
 						purge_all()
 					}
-					6 {
+					5 {
 						pkg := get_input_dialog("Change App's password", 'Package Name',
 							false)
 						if !is_valid_pkg(pkg) {
@@ -2065,7 +1884,7 @@ fn event(e &tui.Event, x voidptr) {
 						back_to_termux()
 						cpw_core(pkg, pw, new_pw)
 					}
-					7 {
+					6 {
 						pkg := get_input_dialog('Remove App', 'Package Name', false)
 						if !is_valid_pkg(pkg) {
 							back_to_termux()
@@ -2074,7 +1893,7 @@ fn event(e &tui.Event, x voidptr) {
 						back_to_termux()
 						rem_pkg_core(pkg)
 					}
-					8 {
+					7 {
 						pkg := get_input_dialog('Force Stop App', 'Package Name', false)
 						if !is_valid_pkg(pkg) {
 							back_to_termux()
@@ -2083,7 +1902,7 @@ fn event(e &tui.Event, x voidptr) {
 						back_to_termux()
 						stop_nosave_core(pkg)
 					}
-					9 {
+					8 {
 						pkg := get_input_dialog('Sync App', 'Package Name', false)
 						if !is_valid_pkg(pkg) {
 							back_to_termux()
@@ -2242,7 +2061,6 @@ fn cli_help() {
 	println('  purge                Emergency purge all')
 	println('  lockall              Lock all active apps')
 	println('  resize <pkg>         Resize app tmpfs')
-	println('  daemon               Run watchdog daemon')
 	println('  despy                Despy')
 	println('  deepclean            Deep cleaning')
 	println('  extc <pkg> <path>    Mount custom path')
@@ -2406,25 +2224,6 @@ fn cli_mode(args []string) {
 			ext := ext_str == 'y' || ext_str == 'Y'
 			resize_app_tmpfs(pkg, delta.int(), ext)
 		}
-		'daemon' {
-			p_pw := read_pw('Panic password: ')
-			if p_pw == '' {
-				fatal('Empty password')
-			}
-			tmo := read_input('Auto-lock timeout (seconds): ')
-			if tmo == '' {
-				fatal('Empty value')
-			}
-			syn := read_input('Sync interval (seconds, 0 to disable): ')
-			if syn == '' {
-				fatal('Empty value')
-			}
-			mg := read_input('Magnetic sensor (uT, 0 to disable): ')
-			if mg == '' {
-				fatal('Empty value')
-			}
-			run_daemon(p_pw, tmo, syn, mg)
-		}
 		'despy' {
 			despy()
 		}
@@ -2562,7 +2361,6 @@ fn main() {
 		'Add New App',
 		'Start / Mount App',
 		'Stop / Sync App',
-		'Run Watchdog Daemon',
 		'List Managed Apps',
 		'Emergency Purge',
 		'Change App Password',
@@ -2579,7 +2377,7 @@ fn main() {
 		'Unhide An App'
 	]
 
-	keys := ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0', 'Q', 'D', 'C', 'E', 'R', 'S', 'L', 'U']
+	keys := ['1', '2', '3', '4', '5', '6', '7', '8', '9', 'Q', 'D', 'C', 'E', 'R', 'S', 'L', 'U']
 
 	mut app := &App{
 		options: options
