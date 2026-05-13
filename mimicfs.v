@@ -1786,25 +1786,25 @@ fn event(e &tui.Event, x voidptr) {
 				app.selected_idx = 8
 			}
 			.d {
-				app.selected_idx = 10
+				app.selected_idx = 9
 			}
 			.c {
-				app.selected_idx = 11
+				app.selected_idx = 10
 			}
 			.e {
-				app.selected_idx = 12
+				app.selected_idx = 11
 			}
 			.r {
-				app.selected_idx = 13
+				app.selected_idx = 12
 			}
 			.s {
-				app.selected_idx = 14
+				app.selected_idx = 13
 			}
 			.l {
-				app.selected_idx = 15
+				app.selected_idx = 14
 			}
 			.u {
-				app.selected_idx = 16
+				app.selected_idx = 15
 			}
 			.enter {
 				for _ in 0 .. 100 { println('') }
@@ -1914,10 +1914,11 @@ fn event(e &tui.Event, x voidptr) {
 						back_to_termux()
 						stop_nokill_core(pkg, pw)
 					}
-					10 {
+					8 { exit(0) }
+					9 {
 						despy()
 					}
-					11 {
+					10 {
 						space := get_input_dialog('Config', 'The size of space in GB',
 							false).int()
 						back_to_termux()
@@ -1925,7 +1926,7 @@ fn event(e &tui.Event, x voidptr) {
 							deep_cleaner_core(space)
 						}
 					}
-					12 {
+					11 {
 						pkg := get_input_dialog('Extc', 'Package Name', false)
 						if !is_valid_pkg(pkg) {
 							back_to_termux()
@@ -1944,7 +1945,7 @@ fn event(e &tui.Event, x voidptr) {
 						}
 						back_to_termux()
 					}
-					13 {
+					12 {
 						path := get_input_dialog('UnExtc', 'Path Name (example /sdcard/yourpath = yourpath)',
 							false)
 						back_to_termux()
@@ -1952,7 +1953,7 @@ fn event(e &tui.Event, x voidptr) {
 							extc_stop(path)
 						}
 					}
-					14 {
+					13 {
 						pkg := get_input_dialog('Resize Tmpfs', 'Package Name', false)
 						if !is_valid_pkg(pkg) {
 							back_to_termux()
@@ -1968,7 +1969,7 @@ fn event(e &tui.Event, x voidptr) {
 						ext := ext_str == 'y' || ext_str == 'Y'
 						resize_app_tmpfs(pkg, delta.int(), ext)
 					}
-					15 {
+					14 {
 						pw := get_input_dialog('Verify Key', 'Encryption Password', true)
 						pw2 := get_input_dialog('Verify Key Again', 'Encryption Password', true)
 						if pw == '' || pw2 != pw {
@@ -1978,7 +1979,7 @@ fn event(e &tui.Event, x voidptr) {
 						back_to_termux()
 						lock_all_core(pw)
 					}
-					16 {
+					15 {
 						pkg := get_input_dialog('Unhide An App', 'Package Name', false)
 						if !is_valid_pkg(pkg) {
 							back_to_termux()
