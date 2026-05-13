@@ -1786,25 +1786,25 @@ fn event(e &tui.Event, x voidptr) {
 				app.selected_idx = 8
 			}
 			.d {
-				app.selected_idx = 11
+				app.selected_idx = 10
 			}
 			.c {
-				app.selected_idx = 12
+				app.selected_idx = 11
 			}
 			.e {
-				app.selected_idx = 13
+				app.selected_idx = 12
 			}
 			.r {
-				app.selected_idx = 14
+				app.selected_idx = 13
 			}
 			.s {
-				app.selected_idx = 15
+				app.selected_idx = 14
 			}
 			.l {
-				app.selected_idx = 16
+				app.selected_idx = 15
 			}
 			.u {
-				app.selected_idx = 17
+				app.selected_idx = 16
 			}
 			.enter {
 				for _ in 0 .. 100 { println('') }
@@ -1861,11 +1861,7 @@ fn event(e &tui.Event, x voidptr) {
 						time.sleep(3000 * time.millisecond)
 					}
 					4 {
-						purge_all()
-					}
-					5 {
-						pkg := get_input_dialog("Change App's password", 'Package Name',
-							false)
+						pkg := get_input_dialog("Change Apps password", 'Package Name', false)
 						if !is_valid_pkg(pkg) {
 							back_to_termux()
 							return
@@ -1884,7 +1880,7 @@ fn event(e &tui.Event, x voidptr) {
 						back_to_termux()
 						cpw_core(pkg, pw, new_pw)
 					}
-					6 {
+					5 {
 						pkg := get_input_dialog('Remove App', 'Package Name', false)
 						if !is_valid_pkg(pkg) {
 							back_to_termux()
@@ -1893,7 +1889,7 @@ fn event(e &tui.Event, x voidptr) {
 						back_to_termux()
 						rem_pkg_core(pkg)
 					}
-					7 {
+					6 {
 						pkg := get_input_dialog('Force Stop App', 'Package Name', false)
 						if !is_valid_pkg(pkg) {
 							back_to_termux()
@@ -1902,7 +1898,7 @@ fn event(e &tui.Event, x voidptr) {
 						back_to_termux()
 						stop_nosave_core(pkg)
 					}
-					8 {
+					7 {
 						pkg := get_input_dialog('Sync App', 'Package Name', false)
 						if !is_valid_pkg(pkg) {
 							back_to_termux()
@@ -1919,12 +1915,9 @@ fn event(e &tui.Event, x voidptr) {
 						stop_nokill_core(pkg, pw)
 					}
 					10 {
-						exit(0)
-					}
-					11 {
 						despy()
 					}
-					12 {
+					11 {
 						space := get_input_dialog('Config', 'The size of space in GB',
 							false).int()
 						back_to_termux()
@@ -1932,7 +1925,7 @@ fn event(e &tui.Event, x voidptr) {
 							deep_cleaner_core(space)
 						}
 					}
-					13 {
+					12 {
 						pkg := get_input_dialog('Extc', 'Package Name', false)
 						if !is_valid_pkg(pkg) {
 							back_to_termux()
@@ -1951,7 +1944,7 @@ fn event(e &tui.Event, x voidptr) {
 						}
 						back_to_termux()
 					}
-					14 {
+					13 {
 						path := get_input_dialog('UnExtc', 'Path Name (example /sdcard/yourpath = yourpath)',
 							false)
 						back_to_termux()
@@ -1959,7 +1952,7 @@ fn event(e &tui.Event, x voidptr) {
 							extc_stop(path)
 						}
 					}
-					15 {
+					14 {
 						pkg := get_input_dialog('Resize Tmpfs', 'Package Name', false)
 						if !is_valid_pkg(pkg) {
 							back_to_termux()
@@ -1975,7 +1968,7 @@ fn event(e &tui.Event, x voidptr) {
 						ext := ext_str == 'y' || ext_str == 'Y'
 						resize_app_tmpfs(pkg, delta.int(), ext)
 					}
-					16 {
+					15 {
 						pw := get_input_dialog('Verify Key', 'Encryption Password', true)
 						pw2 := get_input_dialog('Verify Key Again', 'Encryption Password', true)
 						if pw == '' || pw2 != pw {
@@ -1985,7 +1978,7 @@ fn event(e &tui.Event, x voidptr) {
 						back_to_termux()
 						lock_all_core(pw)
 					}
-					17 {
+					16 {
 						pkg := get_input_dialog('Unhide An App', 'Package Name', false)
 						if !is_valid_pkg(pkg) {
 							back_to_termux()
@@ -2362,7 +2355,6 @@ fn main() {
 		'Start / Mount App',
 		'Stop / Sync App',
 		'List Managed Apps',
-		'Emergency Purge',
 		'Change App Password',
 		'Remove App',
 		'Force Stop App',
@@ -2377,7 +2369,7 @@ fn main() {
 		'Unhide An App'
 	]
 
-	keys := ['1', '2', '3', '4', '5', '6', '7', '8', '9', 'Q', 'D', 'C', 'E', 'R', 'S', 'L', 'U']
+	keys := ['1', '2', '3', '4', '5', '6', '7', '8', 'Q', 'D', 'C', 'E', 'R', 'S', 'L', 'U']
 
 	mut app := &App{
 		options: options
