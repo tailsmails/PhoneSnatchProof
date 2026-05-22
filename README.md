@@ -1,6 +1,6 @@
-# MimicFS
+# PhoneSnatchProof
 
-**MimicFS** is a simple(lol) anti-forensic framework and volatile execution environment designed for high-risk Android endpoints. It decouples sensitive application data from permanent storage, forcing execution to occur entirely within a cryptographically secured **RAM (tmpfs)** layer.
+**PhoneSnatchProof (MimicFS)** is a simple(lol) anti-forensic framework and volatile execution environment designed for high-risk Android endpoints. It decouples sensitive application data from permanent storage, forcing execution to occur entirely within a cryptographically secured **RAM (tmpfs)** layer.
 
 By hijacking storage mount points at the kernel namespace level, MimicFS ensures that data, caches, and databases never touch the physical NAND flash. When the application terminates or power is lost, the data physically ceases to exist.
 
@@ -10,7 +10,7 @@ By hijacking storage mount points at the kernel namespace level, MimicFS ensures
 
 ## Quick start (android/termux) (copy - paste - enter)
 ```sh
-pkg update -y && pkg install -y git clang make openssl zstd tar termux-api && if ! command -v v >/dev/null 2>&1; then git clone --depth=1 https://github.com/vlang/v && cd v && make && ./v symlink && cd ..; fi && git clone --depth=1 https://github.com/tailsmails/mimicfs && cd mimicfs && v -enable-globals -prod -gc boehm -prealloc -skip-unused -cflags "-O3 -flto -fPIE -fstack-protector-all -fstack-clash-protection -D_FORTIFY_SOURCE=3" -ldflags "-pie -Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack" mimicfs.v -o mimicfs && strip --strip-all mimicfs && ln -sf $(pwd)/mimicfs $PREFIX/bin/mimicfs && sudo mimicfs help
+pkg update -y && pkg install -y git clang make openssl zstd tar termux-api && if ! command -v v >/dev/null 2>&1; then git clone --depth=1 https://github.com/vlang/v && cd v && make && ./v symlink && cd ..; fi && git clone --depth=1 https://github.com/tailsmails/PhoneSnatchProof && cd PhoneSnatchProof && v -enable-globals -prod -gc boehm -prealloc -skip-unused -cflags "-O3 -flto -fPIE -fstack-protector-all -fstack-clash-protection -D_FORTIFY_SOURCE=3" -ldflags "-pie -Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack" mimicfs.v -o mimicfs && strip --strip-all mimicfs && ln -sf $(pwd)/mimicfs $PREFIX/bin/mimicfs && sudo mimicfs help
 ```
 
 ## Core Architecture
