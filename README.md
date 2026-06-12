@@ -33,6 +33,8 @@ Target applications run isolated from physical block storage. The directory `/da
 *   **Seed0 Parameter Concealment:** To prevent forensic tools from identifying container metadata, system configuration parameters (such as iteration counts, memory allocations, and thread configurations) are obfuscated inside the file header. They are mapped using HMAC-SHA3-512 brute-force indices. Without the correct initial seed, the file header is indistinguishable from random noise.
 *   **PwGuard Memory Protection:** Plaintext passwords are not retained in system memory. The `PwGuard` structure generates shuffled binary buffers containing random byte values. Password characters are encoded and reconstructed on-the-fly via offset-based pointer lists, minimizing plaintext exposure in physical RAM dumps.
 
+*check github.com/tailsmails/salty for more detais*
+
 ### 3. DeSpy: Active Hardware & Process Integrity Overwatch
 A background defense module that polls kernel parameters and hardware interfaces:
 *   **USB Hard-Kill:** Writes empty configurations to `/config/usb_gadget/g1/UDC` and toggles USB configuration properties to physically disable data lanes at the kernel level, blocking hardware extraction kiosks (such as Cellebrite or GrayKey) while preserving charging capabilities.
