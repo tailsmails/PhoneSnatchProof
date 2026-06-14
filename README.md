@@ -1,3 +1,5 @@
+*this project is under testing, still unstable*
+
 # PhoneSnatchProof / PSP
 
 **PhoneSnatchProof (MimicFS)** is an anti-forensic execution framework designed for high-risk Android endpoints. It decouples sensitive application data from persistent storage, forcing execution to occur within a cryptographically secured **RAM (tmpfs)** layer.
