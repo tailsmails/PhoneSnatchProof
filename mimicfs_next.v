@@ -114,7 +114,17 @@ fn (g PwGuard) decode(pointer_str string) !string {
 
 @[inline; _hot]
 fn send_notification(title string, message string) {
-	os.execute("su -lp 2000 -c \"cmd notification post -S bigtext -t '${title}' 'Security_Monitor' '${message}'\"")
+	os.exec([
+		'su',
+		'-lp',
+		'2000',
+		'-c',
+		r'cmd notification post -S bigtext -t "$1" "Security_Monitor" "$2"',
+		'--',
+		'sh',
+		title,
+		message
+	])
 }
 
 @[inline; must_use; _hot]
