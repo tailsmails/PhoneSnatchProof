@@ -623,6 +623,20 @@ fn wipe_ram(path string) {
 	success('RAM successfully wiped at ${path}')
 }
 
+@[inline; _cold]
+fn mount_temp_ram() string {
+	tmp_ram_dir := '/data/local/tmp/mimic_rtmp'
+	run('mkdir -p ${tmp_ram_dir}')
+	run('mount -t tmpfs -o size=2G tmpfs ${tmp_ram_dir}')
+	return tmp_ram_dir
+}
+
+@[inline; _cold]
+fn unmount_temp_ram(tmp_ram_dir string) {
+	run('umount -l ${tmp_ram_dir}')
+	run('rm -rf ${tmp_ram_dir}')
+}
+
 @[noinline; direct_array_access; _cold]
 fn start_app_core(pkg string, pw string, seed1 string, seed2 string) int {
 	for b in pkg.bytes() {
@@ -699,10 +713,11 @@ fn start_app_core(pkg string, pw string, seed1 string, seed2 string) int {
 	}
 
 	run('mount -t tmpfs -o size=${needed_data}M,mode=771 tmpfs ${safe_rp}')
+	tmp_ram_dir := mount_temp_ram()
 
 	if _likely_(os.exists(vf)) {
-		temp_gz := '/data/local/tmp/${pkg}.tar.gz'
-		temp_tar := '/data/local/tmp/${pkg}.tar'
+		temp_gz := '${tmp_ram_dir}/${pkg}.tar.gz'
+		temp_tar := '${tmp_ram_dir}/${pkg}.tar'
 		
 		locktime_decrypt_flow(vf, temp_gz, pw, seed1, seed2, pbkdf2_iterations, false, false) or {
 			error2('DECRYPTION ERROR: ' + err.msg())
@@ -712,6 +727,7 @@ fn start_app_core(pkg string, pw string, seed1 string, seed2 string) int {
 			run('restorecon -R ${safe_dp}')
 			run('pm enable ${safe_pkg}')
 			run('pm hide ${pkg}')
+			unmount_temp_ram(tmp_ram_dir)
 			return 1
 		}
 		
@@ -734,6 +750,7 @@ fn start_app_core(pkg string, pw string, seed1 string, seed2 string) int {
 			run('restorecon -R ${safe_dp}')
 			run('pm enable ${safe_pkg}')
 			run('pm hide ${pkg}')
+			unmount_temp_ram(tmp_ram_dir)
 			return 1
 		}
 	} else {
@@ -752,8 +769,8 @@ fn start_app_core(pkg string, pw string, seed1 string, seed2 string) int {
 		run('mount -t tmpfs -o size=${needed_storage}M,mode=770,uid=${u},gid=9997 tmpfs ${safe_erp}')
 
 		if os.exists(evf) {
-			temp_ext_gz := '/data/local/tmp/${pkg}.ext.tar.gz'
-			temp_ext_tar := '/data/local/tmp/${pkg}.ext.tar'
+			temp_ext_gz := '${tmp_ram_dir}/${pkg}.ext.tar.gz'
+			temp_ext_tar := '${tmp_ram_dir}/${pkg}.ext.tar'
 			
 			locktime_decrypt_flow(evf, temp_ext_gz, pw, seed1, seed2, pbkdf2_iterations, false, false) or {
 				error2('DECRYPTION ERROR: ' + err.msg())
@@ -763,6 +780,7 @@ fn start_app_core(pkg string, pw string, seed1 string, seed2 string) int {
 				run('restorecon -R ${safe_dp}')
 				run('pm enable ${safe_pkg}')
 				run('pm hide ${pkg}')
+				unmount_temp_ram(tmp_ram_dir)
 				return 1
 			}
 
@@ -785,6 +803,7 @@ fn start_app_core(pkg string, pw string, seed1 string, seed2 string) int {
 				run('restorecon -R ${safe_dp}')
 				run('pm enable ${safe_pkg}')
 				run('pm hide ${pkg}')
+				unmount_temp_ram(tmp_ram_dir)
 				return 1
 			}
 		} else {
@@ -799,6 +818,8 @@ fn start_app_core(pkg string, pw string, seed1 string, seed2 string) int {
 		run('nsenter -t 1 -m mount --bind ${safe_erp} ${safe_vedp}')
 		run('nsenter -t 1 -m mount --bind ${safe_erp} ${safe_redp}')
 	}
+	
+	unmount_temp_ram(tmp_ram_dir)
 
 	run('pm enable ${safe_pkg}')
 	run('pm unhide ${pkg}')
@@ -847,9 +868,12 @@ fn stop_app_core(pkg string, pw string, seed1 string, seed2 string) {
 	kill_app(pkg)
 
 	run('sync && echo 3 > /proc/sys/vm/drop_caches')
+	
+	tmp_ram_dir := mount_temp_ram()
+
 	if _likely_(mounts.contains(rp)) {
-		temp_tar := '/data/local/tmp/${pkg}.tar'
-		temp_gz := '/data/local/tmp/${pkg}.tar.gz'
+		temp_tar := '${tmp_ram_dir}/${pkg}.tar'
+		temp_gz := '${tmp_ram_dir}/${pkg}.tar.gz'
 		run('tar -cp --numeric-owner -C ${rp} . > ${temp_tar}')
 		tar_bytes := os.read_bytes(temp_tar) or { []u8{} }
 		if tar_bytes.len > 0 {
@@ -864,8 +888,8 @@ fn stop_app_core(pkg string, pw string, seed1 string, seed2 string) {
 	}
 	run('sync && echo 3 > /proc/sys/vm/drop_caches')
 	if _likely_(mounts.contains(erp)) {
-		temp_ext_tar := '/data/local/tmp/${pkg}.ext.tar'
-		temp_ext_gz := '/data/local/tmp/${pkg}.ext.tar.gz'
+		temp_ext_tar := '${tmp_ram_dir}/${pkg}.ext.tar'
+		temp_ext_gz := '${tmp_ram_dir}/${pkg}.ext.tar.gz'
 		run('tar -cp --numeric-owner -C ${erp} . > ${temp_ext_tar}')
 		tar_bytes := os.read_bytes(temp_ext_tar) or { []u8{} }
 		if tar_bytes.len > 0 {
@@ -879,6 +903,8 @@ fn stop_app_core(pkg string, pw string, seed1 string, seed2 string) {
 		}
 	}
 	
+	unmount_temp_ram(tmp_ram_dir)
+
 	if _likely_(exists(rp)) {
 		wipe_ram(rp)
 	}
@@ -908,9 +934,12 @@ fn stop_nokill_core(pkg string, pw string, seed1 string, seed2 string) {
 	rp := '/mnt/ram_${pid}'
 	erp := '/mnt/ext_${pid}'
 	mounts := os.execute('mount').output
+	
+	tmp_ram_dir := mount_temp_ram()
+
 	if _likely_(mounts.contains(rp)) {
-		temp_tar := '/data/local/tmp/${pkg}.tar'
-		temp_gz := '/data/local/tmp/${pkg}.tar.gz'
+		temp_tar := '${tmp_ram_dir}/${pkg}.tar'
+		temp_gz := '${tmp_ram_dir}/${pkg}.tar.gz'
 		run('tar -cp --numeric-owner -C ${rp} . > ${temp_tar}')
 		tar_bytes := os.read_bytes(temp_tar) or { []u8{} }
 		if tar_bytes.len > 0 {
@@ -924,8 +953,8 @@ fn stop_nokill_core(pkg string, pw string, seed1 string, seed2 string) {
 		}
 	}
 	if _likely_(mounts.contains(erp)) {
-		temp_ext_tar := '/data/local/tmp/${pkg}.ext.tar'
-		temp_ext_gz := '/data/local/tmp/${pkg}.ext.tar.gz'
+		temp_ext_tar := '${tmp_ram_dir}/${pkg}.ext.tar'
+		temp_ext_gz := '${tmp_ram_dir}/${pkg}.ext.tar.gz'
 		run('tar -cp --numeric-owner -C ${erp} . > ${temp_ext_tar}')
 		tar_bytes := os.read_bytes(temp_ext_tar) or { []u8{} }
 		if tar_bytes.len > 0 {
@@ -938,6 +967,9 @@ fn stop_nokill_core(pkg string, pw string, seed1 string, seed2 string) {
 			error2('ENCRYPTION ERROR: ' + err.msg())
 		}
 	}
+	
+	unmount_temp_ram(tmp_ram_dir)
+
 	if _likely_(exists(rp)) {
 		wipe_ram(rp)
 	}
@@ -981,6 +1013,10 @@ fn C.execl(path &u8, arg0 &u8, ...) int
 @[noinline; noreturn; direct_array_access; _hot]
 fn purge_all() {
     manage_snapshot_protection(false)
+    
+    os.execute('umount -l /data/local/tmp/mimic_rtmp')
+    os.execute('rm -rf /data/local/tmp/mimic_rtmp')
+
     mounts_data := os.read_file('/proc/mounts') or { '' }
 
     for line in mounts_data.split_into_lines() {
@@ -3106,7 +3142,7 @@ use_compression bool) ! {
 	file_salt := secure_random_bytes(32)!
 	outfile.write(file_salt)!
 
-	mut n := big.integer_from_int(0)
+	mut n_val := big.integer_from_int(0)
 	mut t_val := u64(0)
 	mut w_trapdoor_bytes := []u8{}
 	
@@ -3129,7 +3165,7 @@ use_compression bool) ! {
 	for b in file_salt { mask_input << b }
 	mask_stream := sha3.sum512(mask_input)
 	
-	vdf_params := serialize_vdf_params(n, t_val, true)
+	vdf_params := serialize_vdf_params(n_val, t_val, true)
 	mut vdf_size_buf := []u8{}
 	write_u16(mut vdf_size_buf, u16(vdf_params.len))
 
