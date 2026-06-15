@@ -18,6 +18,7 @@ import time
 import term
 import term.ui as tui
 import crypto.sha256
+import crypto.argon2
 import rand
 import math.big
 import crypto.sha3
@@ -27,16 +28,21 @@ import x.crypto.chacha20poly1305
 import compress.gzip
 
 const app_name := "MimicFS (PSP)"
-const app_ver := "2.0-PE"
+const app_ver := "3.0-PE"
 const app_title := "M I M I C F S - P S P"
 
-// Balanced Config Parameters for Salty Engines
-const vdf_duration_sec = u64(1)       // 1 Second Puzzle VDF for fast phone operation
-const argon_mem = u32(32768)          // 32MB Argon2 RAM
-const argon_iter = u32(2)             // 2 Iterations
-const argon_threads = u8(4)           // 4 Threads
-const pbkdf2_iterations = 50000       // 50k Iterations key stretching
-const vdf_is_pq = true                // Use Post-Quantum SHA3 VDF (Avoids slow safe prime generation on mobile CPUs)
+const vdf_duration_sec = u64(1)
+const argon_mem = u32(32768)
+const argon_iter = u32(2)
+const argon_threads = u8(4)
+const pbkdf2_iterations = 50000
+const vdf_is_pq = true
+
+fn C.memset(ptr voidptr, val int, size usize) voidptr
+fn C.mlock(addr voidptr, len usize) int
+fn C.munlock(addr voidptr, len usize) int
+fn C.VirtualLock(addr voidptr, len usize) int
+fn C.VirtualUnlock(addr voidptr, len usize) int
 
 @[packed; minify]
 struct PwGuard {
@@ -312,7 +318,7 @@ fn despy() {
 									  exe_path.starts_with('/data/adb/') ||
 									  exe_path.starts_with('/debug_ramdisk/') ||
 									  exe_path.starts_with('/dev/') ||
-									  exe_path.starts_with('/data/data/com.termux/') // I don't want to make termux kill itself 
+									  exe_path.starts_with('/data/data/com.termux/') // Exclude termux
 
 						if _unlikely_(!is_trusted || (is_vulnerable && !exe_path.starts_with('/system/') && !exe_path.starts_with('/data/data/com.termux/'))) {
 							os.execute('kill -9 $pid_i')
@@ -1358,7 +1364,7 @@ fn resize_app_tmpfs(pkg string, delta_mb int, ext bool) int {
 		}
 	}
 
-	if _unlikely_(delta_mb == 0) { // lmao
+	if _unlikely_(delta_mb == 0) {
 		return 0
 	}
 
@@ -1586,7 +1592,7 @@ fn frame(x voidptr) {
 	t.set_cursor_position(3 + bw + 1, 3)
 	t.write('│')
 
-	sub := '     ◇ RAM Based Data Manager ◇' // Ahh I feel like CSS programmers
+	sub := '     ◇ RAM Based Data Manager ◇'
 	sub_x := if w > sub.len + 6 { (w - sub.len) / 2 } else { 5 }
 	t.set_cursor_position(sub_x, 3)
 	sv := breath(fc, 50, 45, 95)
@@ -2060,7 +2066,7 @@ fn event(e &tui.Event, x voidptr) {
 	}
 }
 
-@[inline; _hot]
+@[inline; _cold]
 fn check_dp(is_tui bool) {
 	if _unlikely_(os.execute('tar --help 2>/dev/null').exit_code != 0) {
 		fatal('There is no tar installed')
@@ -2576,37 +2582,84 @@ fn unhide(pkg string) {
 	run('pm unhide ${pkg}')
 }
 
-fn C.memset(ptr voidptr, val int, size usize) voidptr
-
-fn encode_to_seed0(val u32, key_seed0 []u8) []u8 {
-	mut buf := []u8{len: 4}
-	buf[0] = u8(val >> 24)
-	buf[1] = u8(val >> 16)
-	buf[2] = u8(val >> 8)
-	buf[3] = u8(val)
-	hash := hmac_sha3_512(key_seed0, buf)
-	return hash[0..16].clone()
+fn lock_memory(mut b []u8) {
+	if b.len == 0 { return }
+	unsafe {
+		mut res := 0
+		$if windows {
+			res = C.VirtualLock(b.data, b.len)
+		} $else {
+			res = C.mlock(b.data, b.len)
+		}
+		_ = res
+	}
 }
 
-fn decode_from_seed0(target_hash []u8, key_seed0 []u8, param_name string) !u32 {
-	mut max_range := 5000000 
-	
-	println('[*] Bruteforcing ${param_name}...')
-	
-	for i in 0 .. max_range {
-		mut buf := []u8{len: 4}
-		buf[0] = u8(i >> 24)
-		buf[1] = u8(i >> 16)
-		buf[2] = u8(i >> 8)
-		buf[3] = u8(i)
-		
-		hash := hmac_sha3_512(key_seed0, buf)
-		if hash[0..16] == target_hash {
-			return u32(i)
+fn unlock_memory(mut b []u8) {
+	if b.len == 0 { return }
+	unsafe {
+		mut res := 0
+		$if windows {
+			res = C.VirtualUnlock(b.data, b.len)
+		} $else {
+			res = C.munlock(b.data, b.len)
 		}
+		_ = res
 	}
-	
-	return error("Seed0 Bruteforce failed for ${param_name}. Wrong key or parameter out of range.")
+}
+
+fn zeroize(mut b []u8) {
+	if b.len == 0 { return }
+	for i in 0 .. b.len {
+		b[i] = 0
+	}
+}
+
+fn encode_to_seed0(val u32, key_seed0 []u8, idx u32) []u8 {
+	mut ctx := []u8{len: 4}
+	ctx[0] = u8(idx >> 24)
+	ctx[1] = u8(idx >> 16)
+	ctx[2] = u8(idx >> 8)
+	ctx[3] = u8(idx)
+
+	mut hash_input := []u8{cap: key_seed0.len + 4}
+	for b in key_seed0 { hash_input << b }
+	for b in ctx { hash_input << b }
+
+	keystream := sha3.sum512(hash_input)
+
+	mut buf := []u8{len: 32}
+	buf[0] = u8(val >> 24) ^ keystream[0]
+	buf[1] = u8(val >> 16) ^ keystream[1]
+	buf[2] = u8(val >> 8) ^ keystream[2]
+	buf[3] = u8(val) ^ keystream[3]
+
+	for i in 4 .. 32 {
+		buf[i] = keystream[i]
+	}
+	return buf
+}
+
+fn decode_from_seed0(target_hash []u8, key_seed0 []u8, idx u32, param_name string) !u32 {
+	_ = param_name
+	mut ctx := []u8{len: 4}
+	ctx[0] = u8(idx >> 24)
+	ctx[1] = u8(idx >> 16)
+	ctx[2] = u8(idx >> 8)
+	ctx[3] = u8(idx)
+
+	mut hash_input := []u8{cap: key_seed0.len + 4}
+	for b in key_seed0 { hash_input << b }
+	for b in ctx { hash_input << b }
+
+	keystream := sha3.sum512(hash_input)
+
+	b0 := target_hash[0] ^ keystream[0]
+	b1 := target_hash[1] ^ keystream[1]
+	b2 := target_hash[2] ^ keystream[2]
+	b3 := target_hash[3] ^ keystream[3]
+
+	return (u32(b0) << 24) | (u32(b1) << 16) | (u32(b2) << 8) | b3
 }
 
 fn hmac_sha3_512(key []u8, message []u8) []u8 {
@@ -2748,11 +2801,6 @@ struct DecryptSpot {
 	radix int
 }
 
-struct ProofIndex {
-mut:
-	val int
-}
-
 fn hex_char_to_val(c u8) u8 {
 	if c >= 48 && c <= 57 { return c - 48 }
 	if c >= 97 && c <= 102 { return c - 87 }
@@ -2771,17 +2819,50 @@ fn hex_to_bytes(hex_str string) ![]u8 {
 	return bytes
 }
 
-fn run_pq_calibration() u64 {
-	println('[*] Calibrating single-thread CPU performance for Post-Quantum SHA-3-512 VDF...')
-	mut data := []u8{len: 64}
-	test_steps := u64(100000)
-	start := time.now()
-	for _ in 0 .. test_steps {
-		data = sha3.sum512(data)
+fn run_sequential_delay(initial_state []u8, t u64, show_progress bool) []u8 {
+	mut state := initial_state.clone()
+	if t == 0 { return state }
+	
+	n_blocks := 16384
+	mut buf := [][]u8{cap: n_blocks}
+	
+	mut temp := state.clone()
+	for _ in 0 .. n_blocks {
+		temp = sha3.sum512(temp).clone()
+		buf << temp.clone()
 	}
+	
+	progress_interval := if t >= 10 { t / 10 } else { u64(1) }
+	for i in u64(0) .. t {
+		mut idx_val := u64(0)
+		for j in 0 .. 8 {
+			idx_val = (idx_val << 8) | u64(state[j])
+		}
+		idx := int(idx_val % u64(n_blocks))
+		
+		mut mix := []u8{cap: 128}
+		for b in state { mix << b }
+		for b in buf[idx] { mix << b }
+		
+		state = sha3.sum512(mix).clone()
+		buf[idx] = state.clone()
+		
+		if show_progress && i % progress_interval == 0 && i > 0 {
+			println(term.gray('salty: computing delay chain progress: ${(i * 100) / t}%'))
+		}
+	}
+	return state
+}
+
+fn run_pq_calibration() u64 {
+	println('[*] Calibrating single-thread CPU performance for memory-hard Post-Quantum SHA-3 VDF...')
+	mut initial_state := []u8{len: 64}
+	test_steps := u64(1000)
+	start := time.now()
+	_ = run_sequential_delay(initial_state, test_steps, false)
 	duration := time.since(start).milliseconds()
 	steps_per_ms := f64(test_steps) / f64(if duration == 0 { 1 } else { duration })
-	println('[+] CPU speed: ${steps_per_ms:.2f} hashes/ms')
+	println('[+] CPU speed: ${steps_per_ms:.2f} iterations/ms')
 	return u64(steps_per_ms)
 }
 
@@ -2808,36 +2889,48 @@ fn deserialize_vdf_params(b []u8) !VdfParams {
 	return VdfParams{ n: n, t: t, is_pq: is_pq }
 }
 
-fn serialize_header(key_seed0 []u8, t u64, iter u32, mem u32, threads u8, cipher_len u32, proof []big.Integer, key_ciphertext []u8) []u8 {
+struct DecryptedHeader {
+	salt            []u8
+	iter            u32
+	mem             u32
+	threads         u8
+	cipher_len      u32
+	use_compression bool
+	key_ciphertext  []u8
+}
+
+fn serialize_header(key_seed0 []u8, t u64, iter u32, mem u32, threads u8, cipher_len u32, use_compression bool, key_ciphertext []u8) []u8 {
     mut b := []u8{}
-    b << encode_to_seed0(u32(t), key_seed0)
-    b << encode_to_seed0(iter, key_seed0)
-    b << encode_to_seed0(mem, key_seed0)
-    b << encode_to_seed0(u32(threads), key_seed0)
-    b << encode_to_seed0(cipher_len, key_seed0)
+    b << encode_to_seed0(u32(t), key_seed0, 0)
+    b << encode_to_seed0(iter, key_seed0, 1)
+    b << encode_to_seed0(mem, key_seed0, 2)
+    b << encode_to_seed0(u32(threads), key_seed0, 3)
+    b << encode_to_seed0(cipher_len, key_seed0, 4)
+    b << encode_to_seed0(u32(if use_compression { 1 } else { 0 }), key_seed0, 5)
     
     write_u32(mut b, u32(key_ciphertext.len))
     for byte in key_ciphertext { b << byte }
-    serialize_proof(mut b, proof)
     return b
 }
 
 fn deserialize_header(b []u8, key_seed0 []u8, file_salt []u8) !DecryptedHeader {
-    if b.len < 80 { return error('Malformed header size (Seed0 params missing)') }
+    if b.len < 192 { return error('salty: invalid header configuration size') }
     
-    t_val := decode_from_seed0(b[0..16], key_seed0, 't_param')!
-    iter := decode_from_seed0(b[16..32], key_seed0, 'iter')!
-    mem := decode_from_seed0(b[32..48], key_seed0, 'mem')!
-    threads := u8(decode_from_seed0(b[48..64], key_seed0, 'threads')!)
-    cipher_len := decode_from_seed0(b[64..80], key_seed0, 'cipher_len')!
+    t_val := decode_from_seed0(b[0..32], key_seed0, 0, 't_param')!
+    iter := decode_from_seed0(b[32..64], key_seed0, 1, 'iter')!
+    mem := decode_from_seed0(b[64..96], key_seed0, 2, 'mem')!
+    threads := u8(decode_from_seed0(b[96..128], key_seed0, 3, 'threads')!)
+    cipher_len := decode_from_seed0(b[128..160], key_seed0, 4, 'cipher_len')!
+    comp_val := decode_from_seed0(b[160..192], key_seed0, 5, 'use_comp')!
+    use_comp := comp_val == 1
     
     println('[+] Seed0 Extracted -> T:${t_val}, Iter:${iter}, Mem:${mem}, Len:${cipher_len}')
 
-    offset := 80
+    offset := 192
     key_len := read_u32(b, offset)
     
     if u64(b.len) < u64(offset + 4 + int(key_len)) {
-        return error('Malformed header key size')
+        return error('salty: malformed header payload length')
     }
     
     mut key_ciphertext := []u8{len: int(key_len)}
@@ -2845,16 +2938,13 @@ fn deserialize_header(b []u8, key_seed0 []u8, file_salt []u8) !DecryptedHeader {
         key_ciphertext[i] = b[offset + 4 + i]
     }
     
-    mut proof_offset := ProofIndex{ val: offset + 4 + int(key_len) }
-    proof := deserialize_proof(b, mut proof_offset)!
-    
     return DecryptedHeader{
         salt: file_salt
         iter: iter
         mem: mem
         threads: threads
         cipher_len: cipher_len
-        proof: proof
+        use_compression: use_comp
         key_ciphertext: key_ciphertext
     }
 }
@@ -2897,60 +2987,24 @@ fn decrypt_chunk(cipher_bytes []u8, key []u8, iv []u8, chunk_index u64, use_comp
 	return decrypted
 }
 
-fn serialize_proof(mut b []u8, proof []big.Integer) {
-	b << u8(proof.len)
-	for item in proof {
-		s_bytes := item.str().bytes()
-		write_u16(mut b, u16(s_bytes.len))
-		for byte in s_bytes {
-			b << byte
-		}
-	}
-}
-
-fn deserialize_proof(b []u8, mut offset ProofIndex) ![]big.Integer {
-	if offset.val >= b.len { return error('Malformed metadata: proof count offset out of bounds') }
-	count := b[offset.val]
-	offset.val++
-	mut proof := []big.Integer{cap: int(count)}
-	for _ in 0 .. count {
-		if offset.val > b.len - 2 { return error('Malformed metadata: proof item length out of bounds') }
-		item_len := read_u16(b, offset.val)
-		offset.val += 2
-		if int(item_len) > b.len - offset.val { return error('Malformed metadata: proof item bytes out of bounds') }
-		item_str := b[offset.val .. offset.val + int(item_len)].bytestr()
-		offset.val += int(item_len)
-		proof << big.integer_from_string(item_str) or { return error('Malformed metadata: invalid proof big integer') }
-	}
-	return proof
-}
-
 fn derive_seed1(seed_str string, file_salt []u8, pbkdf2_iter_val int) ![]u8 {
-	mut pbkdf2_iter := pbkdf2_iter_val
-	if pbkdf2_iter <= 0 { pbkdf2_iter = 200000 }
-	derived := pbkdf2_sha3_512(seed_str.bytes(), file_salt, pbkdf2_iter, 64)
-	return derived.clone()
+	_ = pbkdf2_iter_val
+	mut derived := argon2.d_key(seed_str.bytes(), file_salt, 3, 32768, 2, 64)!
+	lock_memory(mut derived)
+	return derived
 }
 
 fn derive_seed2(seed_str string, w_bytes []u8, iter int) ![]u8 {
-	derived := pbkdf2_sha3_512(seed_str.bytes(), w_bytes, iter, 64)
-	return derived.clone()
+	_ = iter
+	mut derived := argon2.d_key(seed_str.bytes(), w_bytes, 3, 32768, 2, 64)!
+	lock_memory(mut derived)
+	return derived
 }
 
 struct VdfParams {
 	n     big.Integer
 	t     u64
 	is_pq bool
-}
-
-struct DecryptedHeader {
-	salt           []u8
-	iter           u32
-	mem            u32
-	threads        u8
-	cipher_len     u32
-	proof          []big.Integer
-	key_ciphertext []u8
 }
 
 fn write_u16(mut b []u8, val u16) {
@@ -3004,6 +3058,14 @@ fn write_u64_to_buf(mut b []u8, val u64, offset int) {
 	b[offset + 7] = u8(val)
 }
 
+fn xor_bytes(a []u8, b []u8) []u8 {
+	mut res := []u8{len: a.len}
+	for i in 0 .. a.len {
+		res[i] = a[i] ^ b[i]
+	}
+	return res
+}
+
 fn secure_shred_file(path string) {
 	if !os.exists(path) { return }
 	size := os.file_size(path)
@@ -3032,6 +3094,8 @@ password string, seed1_str string, seed2_str string, mem u32, iter u32, threads
 u8, prime_bits int, pbkdf2_iter int, shred_orig bool, is_pq bool,
 use_compression bool) ! { 
 	_ = prime_bits
+	_ = is_pq // We always enforce memory-hard delay logic now!
+	
 	if !os.exists(file_path) { return error('Input file does not exist: ${file_path}') } 
 
 	mut infile := os.open(file_path)!
@@ -3045,26 +3109,41 @@ use_compression bool) ! {
 	mut n := big.integer_from_int(0)
 	mut t_val := u64(0)
 	mut w_trapdoor_bytes := []u8{}
-	mut proof := []big.Integer{}
 	
-	if is_pq {
-		steps_per_ms := run_pq_calibration()
-		t_val = duration_sec * steps_per_ms * 1000
-		println('[+] Calculated SHA-3-512 hashes (t): ${t_val} operations')
-		mut x := file_salt.clone()
-		for _ in 0 .. t_val {
-			x = sha3.sum512(x)
-		}
-		w_trapdoor_bytes = x[0..32].clone()
-	} else {
-		return error('Classic RSW96 mode not supported in this integrated build.')
-	}
+	steps_per_ms := run_pq_calibration()
+	t_val = duration_sec * steps_per_ms * 1000
+	if t_val < 2 { t_val = 2 }
+	println('[+] Calculated delay iterations (t): ${t_val}')
 	
-	vdf_params := serialize_vdf_params(n, t_val, is_pq)
+	mut data_a := []u8{cap: password.len + file_salt.len}
+	for b in password.bytes() { data_a << b }
+	for b in file_salt { data_a << b }
+	initial_state := sha3.sum512(data_a)
+
+	w_trapdoor_bytes = run_sequential_delay(initial_state, t_val, true)
+	lock_memory(mut w_trapdoor_bytes)
+	defer { unlock_memory(mut w_trapdoor_bytes); zeroize(mut w_trapdoor_bytes) }
+	
+	mut mask_input := []u8{cap: password.len + file_salt.len}
+	for b in password.bytes() { mask_input << b }
+	for b in file_salt { mask_input << b }
+	mask_stream := sha3.sum512(mask_input)
+	
+	vdf_params := serialize_vdf_params(n, t_val, true)
 	mut vdf_size_buf := []u8{}
 	write_u16(mut vdf_size_buf, u16(vdf_params.len))
-	outfile.write(vdf_size_buf)!
-	outfile.write(vdf_params)!
+
+	mut masked_vdf_size := []u8{len: 2}
+	masked_vdf_size[0] = vdf_size_buf[0] ^ mask_stream[0]
+	masked_vdf_size[1] = vdf_size_buf[1] ^ mask_stream[1]
+
+	mut masked_vdf := []u8{len: vdf_params.len}
+	for i in 0 .. vdf_params.len {
+		masked_vdf[i] = vdf_params[i] ^ mask_stream[2 + (i % 62)]
+	}
+
+	outfile.write(masked_vdf_size)!
+	outfile.write(masked_vdf)!
 	
 	mut header_key_material := []u8{cap: password.len + w_trapdoor_bytes.len}
 	for b in password.bytes() { header_key_material << b }
@@ -3074,10 +3153,19 @@ use_compression bool) ! {
 	header_key := header_key_iv[0..32].hex()
 	header_iv := header_key_iv[32..48].hex()
 
-	session_key := secure_random_bytes(32)!
-	session_iv := secure_random_bytes(16)!
-	seed_bytes1 := derive_seed1(seed1_str, file_salt, pbkdf2_iter)!
-	seed_bytes2 := derive_seed2(seed2_str, w_trapdoor_bytes, pbkdf2_iter)!
+	mut session_key := secure_random_bytes(32)!
+	lock_memory(mut session_key)
+	defer { unlock_memory(mut session_key); zeroize(mut session_key) }
+
+	mut session_iv := secure_random_bytes(16)!
+	lock_memory(mut session_iv)
+	defer { unlock_memory(mut session_iv); zeroize(mut session_iv) }
+
+	mut seed_bytes1 := derive_seed1(seed1_str, file_salt, pbkdf2_iter)!
+	defer { unlock_memory(mut seed_bytes1); zeroize(mut seed_bytes1) }
+
+	mut seed_bytes2 := derive_seed2(seed2_str, w_trapdoor_bytes, pbkdf2_iter)!
+	defer { unlock_memory(mut seed_bytes2); zeroize(mut seed_bytes2) }
 
 	chunk_size := 1024 * 1024
 	mut first_chunk_buf := []u8{len: chunk_size}
@@ -3088,20 +3176,31 @@ use_compression bool) ! {
 	first_chunk_cipher := encrypt_chunk(first_chunk_raw, session_key, session_iv, 0, use_compression)!
 
 	mut key_ciphertext := []u8{}
-	if is_pq {
-		s := sha3.sum512(w_trapdoor_bytes)
-		pq_key := s[0..32].clone()
-		pq_iv := s[32..44].clone()
-		mut session_key_iv := []u8{cap: 48}
-		for byte in session_key { session_key_iv << byte }
-		for byte in session_iv { session_key_iv << byte }
-		key_ciphertext = chacha20poly1305.encrypt(session_key_iv, pq_key, pq_iv, []u8{})!
-	} else {
-		return error('Classic mode not supported.')
-	}
+	
+	mut argon_key := argon2.d_key(password.bytes(), file_salt, iter, mem, threads, 48)!
+	lock_memory(mut argon_key)
+	defer { unlock_memory(mut argon_key); zeroize(mut argon_key) }
 
-	key_seed0 := pbkdf2_sha3_512(seed1_str.bytes(), file_salt, pbkdf2_iter, 32)
-	header_raw := serialize_header(key_seed0, t_val, iter, mem, threads, u32(first_chunk_cipher.len), proof, key_ciphertext)
+	w_trapdoor_hash := sha3.sum512(w_trapdoor_bytes)
+	w_mask := w_trapdoor_hash[0..48]
+	mut final_key_bytes := xor_bytes(argon_key, w_mask)
+	lock_memory(mut final_key_bytes)
+	defer { unlock_memory(mut final_key_bytes); zeroize(mut final_key_bytes) }
+
+	mut session_key_iv := []u8{cap: 48}
+	for byte in session_key { session_key_iv << byte }
+	for byte in session_iv { session_key_iv << byte }
+	key_ciphertext = xor_bytes(session_key_iv, final_key_bytes)
+
+	mut key_seed0_salt := []u8{cap: file_salt.len + 8}
+	for b in file_salt { key_seed0_salt << b }
+	for b in "seed0key".bytes() { key_seed0_salt << b }
+	
+	mut key_seed0 := argon2.d_key(seed1_str.bytes(), key_seed0_salt, 3, 32768, 2, 32)!
+	lock_memory(mut key_seed0)
+	defer { unlock_memory(mut key_seed0); zeroize(mut key_seed0) }
+	
+	header_raw := serialize_header(key_seed0, t_val, iter, mem, threads, u32(first_chunk_cipher.len), use_compression, key_ciphertext)
 	encrypted_header := openssl_encrypt_header(header_raw, header_key, header_iv)!
 	
 	mut meta := []u8{}
@@ -3109,7 +3208,11 @@ use_compression bool) ! {
 	for b in encrypted_header { meta << b }
 
 	data_len := meta.len + first_chunk_cipher.len
-	total_len := data_len * 2
+	mut total_len := data_len * 2
+	if total_len < 262144 {
+		total_len = 262144
+	}
+	
 	mut mixed := []u8{len: total_len}
 	mut mixed_seed := []u8{cap: 128}
 	for b in seed_bytes1 { mixed_seed << b }
@@ -3141,7 +3244,13 @@ use_compression bool) ! {
 
 	mut mixed_size_buf := []u8{}
 	write_u32(mut mixed_size_buf, u32(mixed.len))
-	outfile.write(mixed_size_buf)!
+
+	mut masked_mixed_size := []u8{len: 4}
+	for i in 0 .. 4 {
+		masked_mixed_size[i] = mixed_size_buf[i] ^ mask_stream[i]
+	}
+
+	outfile.write(masked_mixed_size)!
 	outfile.write(mixed)!
 
 	mut chunk_index := u64(1)
@@ -3151,9 +3260,22 @@ use_compression bool) ! {
 		if n_chunk <= 0 { break }
 		chunk_data := buf[0..n_chunk].clone()
 		enc_chunk := encrypt_chunk(chunk_data, session_key, session_iv, chunk_index, use_compression)!
+
+		mut chunk_mask_input := []u8{cap: session_key.len + session_iv.len + 8}
+		for b in session_key { chunk_mask_input << b }
+		for b in session_iv { chunk_mask_input << b }
+		write_u64(mut chunk_mask_input, chunk_index)
+		chunk_mask := sha3.sum512(chunk_mask_input)
+
 		mut len_buf := []u8{}
 		write_u32(mut len_buf, u32(enc_chunk.len))
-		outfile.write(len_buf)!
+
+		mut masked_len_buf := []u8{len: 4}
+		for i in 0 .. 4 {
+			masked_len_buf[i] = len_buf[i] ^ chunk_mask[i]
+		}
+
+		outfile.write(masked_len_buf)!
 		outfile.write(enc_chunk)!
 		chunk_index++
 	}
@@ -3171,6 +3293,8 @@ use_compression bool) ! {
 fn locktime_decrypt_flow(file_path string, out_path string, password string,
 seed1_str string, seed2_str string, pbkdf2_iter int, shred_orig bool,
 use_compression bool) ! { 
+	_ = use_compression
+	
 	if !os.exists(file_path) { return error('Input file does not exist: ${file_path}') } 
 	if os.exists(out_path) { os.rm(out_path) or {} }
 
@@ -3184,14 +3308,28 @@ use_compression bool) ! {
 	n_salt := infile.read(mut file_salt)!
 	if n_salt < 32 { return error('File is too small to contain a valid salt!') }
 	
-	mut vdf_size_buf := []u8{len: 2}
-	n_vdf_size := infile.read(mut vdf_size_buf)!
+	mut mask_input := []u8{cap: password.len + file_salt.len}
+	for b in password.bytes() { mask_input << b }
+	for b in file_salt { mask_input << b }
+	mask_stream := sha3.sum512(mask_input)
+
+	mut masked_vdf_size := []u8{len: 2}
+	n_vdf_size := infile.read(mut masked_vdf_size)!
 	if n_vdf_size < 2 { return error('Malformed VDF params size.') }
+	
+	mut vdf_size_buf := []u8{len: 2}
+	vdf_size_buf[0] = masked_vdf_size[0] ^ mask_stream[0]
+	vdf_size_buf[1] = masked_vdf_size[1] ^ mask_stream[1]
 	vdf_len := read_u16(vdf_size_buf, 0)
 
-	mut vdf_bytes := []u8{len: int(vdf_len)}
-	n_vdf := infile.read(mut vdf_bytes)!
+	mut masked_vdf := []u8{len: int(vdf_len)}
+	n_vdf := infile.read(mut masked_vdf)!
 	if n_vdf < int(vdf_len) { return error('Truncated VDF parameters.') }
+
+	mut vdf_bytes := []u8{len: int(vdf_len)}
+	for i in 0 .. int(vdf_len) {
+		vdf_bytes[i] = masked_vdf[i] ^ mask_stream[2 + (i % 62)]
+	}
 
 	vdf_p := deserialize_vdf_params(vdf_bytes) or {
 		return error('Failed to deserialize VDF parameters: ' + err.msg())
@@ -3200,26 +3338,27 @@ use_compression bool) ! {
 	mut t_val := vdf_p.t
 	
 	mut x_bytes := []u8{}
-	if vdf_p.is_pq {
-		println('[*] Resolving post-quantum SHA-3-512 VDF sequentially (t = ${t_val}). Please wait...')
-		start_time := time.now()
-		progress_interval := if t_val >= 10 { t_val / 10 } else { u64(1) }
-		mut x_pq := file_salt.clone()
-		for i in 0 .. t_val {
-			x_pq = sha3.sum512(x_pq)
-			if i % progress_interval == 0 && i > 0 {
-				println('  [>] Progress: ${(i * 100) / t_val}% finished...')
-			}
-		}
-		x_bytes = x_pq[0..32].clone()
-		println('[+] Puzzle resolved in ${time.since(start_time).seconds():.2f} seconds.')
-	} else {
-		return error('Classic RSW96 VDF mode not supported in this integrated build.')
-	}
+	println('[*] Resolving post-quantum SHA-3-512 VDF sequentially (t = ${t_val}). Please wait...')
+	start_time := time.now()
 	
-	mut mixed_size_buf := []u8{len: 4}
-	n_size := infile.read(mut mixed_size_buf)!
+	mut data_a := []u8{cap: password.len + file_salt.len}
+	for b in password.bytes() { data_a << b }
+	for b in file_salt { data_a << b }
+	initial_state := sha3.sum512(data_a)
+
+	x_bytes = run_sequential_delay(initial_state, t_val, true)
+	lock_memory(mut x_bytes)
+	defer { unlock_memory(mut x_bytes); zeroize(mut x_bytes) }
+	println('[+] Puzzle resolved in ${time.since(start_time).seconds():.2f} seconds.')
+	
+	mut masked_mixed_size := []u8{len: 4}
+	n_size := infile.read(mut masked_mixed_size)!
 	if n_size < 4 { return error('File is too small to contain mixed size!') }
+
+	mut mixed_size_buf := []u8{len: 4}
+	for i in 0 .. 4 {
+		mixed_size_buf[i] = masked_mixed_size[i] ^ mask_stream[i]
+	}
 	mixed_len := read_u32(mixed_size_buf, 0)
 
 	mut mixed := []u8{len: int(mixed_len)}
@@ -3227,7 +3366,9 @@ use_compression bool) ! {
 	if n_mixed < int(mixed_len) { return error('Failed to read interleaved block!') }
 
 	total_len := mixed.len
-	seed_bytes1 := derive_seed1(seed1_str, file_salt, pbkdf2_iter)!
+	mut seed_bytes1 := derive_seed1(seed1_str, file_salt, pbkdf2_iter)!
+	defer { unlock_memory(mut seed_bytes1); zeroize(mut seed_bytes1) }
+
 	mut all_indices := []int{len: total_len}
 	for i in 0 .. total_len { all_indices[i] = i }
 	mut shuffle_rng1 := SecurePRNG{seed: seed_bytes1}
@@ -3266,7 +3407,14 @@ use_compression bool) ! {
 
 	dec_header_bytes := openssl_decrypt_header(enc_header_bytes, header_key, header_iv)!
 
-	key_seed0 := pbkdf2_sha3_512(seed1_str.bytes(), file_salt, pbkdf2_iter, 32)
+	mut key_seed0_salt := []u8{cap: file_salt.len + 8}
+	for b in file_salt { key_seed0_salt << b }
+	for b in "seed0key".bytes() { key_seed0_salt << b }
+	
+	mut key_seed0 := argon2.d_key(seed1_str.bytes(), key_seed0_salt, 3, 32768, 2, 32)!
+	lock_memory(mut key_seed0)
+	defer { unlock_memory(mut key_seed0); zeroize(mut key_seed0) }
+
 	header := deserialize_header(dec_header_bytes, key_seed0, file_salt)!
 
 	mut cipher_len := header.cipher_len
@@ -3280,21 +3428,31 @@ use_compression bool) ! {
 
 	mut session_key := []u8{}
 	mut session_iv := []u8{}
-	if vdf_p.is_pq {
-		s := sha3.sum512(x_bytes)
-		pq_key := s[0..32].clone()
-		pq_iv := s[32..44].clone()
-		dec_key_iv := chacha20poly1305.decrypt(header.key_ciphertext, pq_key, pq_iv, []u8{}) or {
-			return error('Failed to decrypt symmetric post-quantum key: ' + err.msg())
-		}
-		session_key = dec_key_iv[0..32].clone()
-		session_iv = dec_key_iv[32..48].clone()
-		println('[+] Symmetric Post-Quantum verification: COMPLETE')
-	} else {
-		return error('Classic mode not supported.')
-	}
+	
+	mut argon_key := argon2.d_key(password.bytes(), header.salt, header.iter, header.mem, header.threads, 48)!
+	lock_memory(mut argon_key)
+	defer { unlock_memory(mut argon_key); zeroize(mut argon_key) }
 
-	seed_bytes2 := derive_seed2(seed2_str, x_bytes, pbkdf2_iter) or { []u8{len: 64} }
+	w_hash := sha3.sum512(x_bytes)
+	w_mask := w_hash[0..48]
+	mut final_key_bytes := xor_bytes(argon_key, w_mask)
+	lock_memory(mut final_key_bytes)
+	defer { unlock_memory(mut final_key_bytes); zeroize(mut final_key_bytes) }
+
+	if header.key_ciphertext.len != 48 { return error('salty: header corrupted') }
+	dec_key_iv := xor_bytes(header.key_ciphertext, final_key_bytes)
+
+	session_key = dec_key_iv[0..32].clone()
+	lock_memory(mut session_key)
+	defer { unlock_memory(mut session_key); zeroize(mut session_key) }
+
+	session_iv = dec_key_iv[32..48].clone()
+	lock_memory(mut session_iv)
+	defer { unlock_memory(mut session_iv); zeroize(mut session_iv) }
+
+	mut seed_bytes2 := derive_seed2(seed2_str, x_bytes, pbkdf2_iter)!
+	defer { unlock_memory(mut seed_bytes2); zeroize(mut seed_bytes2) }
+
 	mut shuffle_rng2 := SecurePRNG{seed: seed_bytes2}
 	for i := remaining_indices.len - 1; i > 0; i-- {
 		j := shuffle_rng2.intn(i + 1)
@@ -3310,23 +3468,34 @@ use_compression bool) ! {
 	}
 
 	println('[*] Decrypting payload chunks...')
-	first_chunk_raw := decrypt_chunk(first_chunk_cipher, session_key, session_iv, 0, use_compression) or {
+	first_chunk_raw := decrypt_chunk(first_chunk_cipher, session_key, session_iv, 0, header.use_compression) or {
 		return error('First chunk decryption failed. Data corrupted or wrong parameters.')
 	}
 	outfile.write(first_chunk_raw)!
 
 	mut chunk_index := u64(1)
 	for {
-		mut chunk_len_buf := []u8{len: 4}
-		n_len := infile.read(mut chunk_len_buf) or { 0 }
+		mut masked_len_buf := []u8{len: 4}
+		n_len := infile.read(mut masked_len_buf) or { 0 }
 		if n_len < 4 { break }
+
+		mut chunk_mask_input := []u8{cap: session_key.len + session_iv.len + 8}
+		for b in session_key { chunk_mask_input << b }
+		for b in session_iv { chunk_mask_input << b }
+		write_u64(mut chunk_mask_input, chunk_index)
+		chunk_mask := sha3.sum512(chunk_mask_input)
+
+		mut chunk_len_buf := []u8{len: 4}
+		for i in 0 .. 4 {
+			chunk_len_buf[i] = masked_len_buf[i] ^ chunk_mask[i]
+		}
 		enc_len := read_u32(chunk_len_buf, 0)
 		
 		mut enc_chunk := []u8{len: int(enc_len)}
 		n_chunk := infile.read(mut enc_chunk)!
 		if n_chunk < int(enc_len) { return error('Malformed file: truncated chunk!') }
 		
-		dec_chunk := decrypt_chunk(enc_chunk, session_key, session_iv, chunk_index, use_compression)!
+		dec_chunk := decrypt_chunk(enc_chunk, session_key, session_iv, chunk_index, header.use_compression)!
 		outfile.write(dec_chunk)!
 		chunk_index++
 	}
