@@ -30,13 +30,14 @@ pkg update -y && pkg install -y git clang make tar termux-api && if ! command -v
 
 ### 1. In-Memory Volatile Runtime (`mimicfs_next.v` Upgrades)
 Target applications run isolated from physical block storage. The directory `/data/data/<package_name>` is overlaid with a temporary memory filesystem (`tmpfs`).
-*   **Native Cryptography:** Rather than spawning external subprocesses to call command-line utilities, `mimicfs_next.v` performs encryption and decryption tasks in-memory using native V modules (`x.crypto.chacha20`, `x.crypto.chacha20poly1305`, `crypto.argon2`, and `crypto.sha3`). This reduces the attack surface and prevents potential command injection vectors.
-*   **Native Compression:** Uses the native `compress.gzip` module to process tarballs directly in memory.
+*   **Double-Layer Cryptography:** Rather than relying on a single cipher or external binaries, `mimicfs_next.v` performs encryption and decryption tasks in-memory using a native dual-layer **AES-CTR and ChaCha20-Poly1305** pipeline via native V modules (`x.crypto.chacha20`, `x.crypto.chacha20poly1305`, `crypto.aes`, `crypto.cipher`, `crypto.argon2`, and `crypto.sha3`). This combined cipher structure ensures cryptographic resistance against single-algorithm compromises.
+*   **Dual-Engine Compression:** Uses the native `compress.zstd` module to process volatile payload chunks directly in-memory, while maintaining `compress.gzip` to handle outer tarball structures.
 *   **Data Lifecycle:** On startup, the encrypted container is decrypted and extracted into the allocated `tmpfs` space. Upon explicit termination, changes are compressed, encrypted, and synced back to persistent storage. Active RAM blocks are then neutralized via multi-pass random data writes before unmounting.
 
 ### 2. Post-Quantum VDF, Obfuscated Headers & Key Wrapping
-*   **Memory-Hard Post-Quantum VDF:** Upgraded from a simple sequential SHA-3 loop to a memory-hard delay chain. The system initializes a state using `SHA-3-512(Password + Salt)` and sequentially mixes it with a table of 16,384 hashed blocks. This introduces significant memory overhead for ASIC/GPU-parallelized solvers, ensuring the calibrated delay remains consistent with single-thread CPU performance.
-*   **Direct Seed0 Keystream Header Obfuscation:** The configuration parameters (such as `t` iterations, Argon2 memory, thread limits, chunk length, and compression status) are encrypted using a direct XOR-based decoding scheme. A keystream is generated deterministically using `key_seed0` and contextual index offsets, eliminating the need for slow brute-forcing of headers while maintaining indistinguishability from random noise.
+*   **Memory-Hard Post-Quantum VDF:** Upgraded from a simple sequential SHA-3 loop to a memory-hard delay chain. The system initializes a state using `SHA-3-512` based on the master password and file salt, sequentially resolving VDF iterations to enforce a reliable memory-hard CPU delay.
+*   **Deterministic Seed Derivation (Password-Only UX):** To simplify the user experience and reduce human error, `seed0`, `seed1`, and `seed2` are no longer inputted manually. Instead, they are deterministically and securely derived from the master password (using PBKDF2-SHA3-512 with cryptographically isolated salts). This binds the entire cryptographic pipeline exclusively to the master key.
+*   **Direct Seed0 Keystream Header Obfuscation:** The configuration parameters (such as `t` iterations, Argon2 memory, thread limits, chunk length, and compression status) are encrypted using a direct XOR-based decoding scheme. A keystream is generated deterministically using `key_seed0` (derived from the derived `seed0`) and contextual index offsets, eliminating the need for slow brute-forcing of headers while maintaining indistinguishability from random noise.
 *   **Argon2-VDF XOR Key Wrapping:** The master key-wrapping layer has been strengthened. The master key-wrapping material (`final_key_bytes`) is computed by XORing a memory-hard **Argon2 KDF** key (derived from password + salt) with a mask generated from the final VDF delay trapdoor (`w_mask`). The 48-byte session key and IV are then encrypted via XOR with this combined key. Decryption is computationally bound to completing both the memory-hard VDF chain and entering the correct password (required for Argon2).
 *   **Obfuscated VDF Metadata Layer:** To prevent passive detection of time-lock containers, the serialized VDF parameters block is completely obfuscated by XORing it with a rolling index key derived from `SHA-3-512(Password + Salt)`. This ensures that even the VDF length and iteration boundaries are indistinguishable from random data to observers who do not possess the password.
 *   **PwGuard Memory Protection:** Plaintext passwords are not retained in system memory. The `PwGuard` structure generates shuffled binary buffers containing random byte values. Password characters are encoded and reconstructed on-the-fly via offset-based pointer lists, minimizing plaintext exposure in physical RAM dumps.
@@ -54,7 +55,7 @@ A background defense module that polls kernel parameters and hardware interfaces
 To counteract entropy starvation on mobile devices, a background daemon harvests hardware noise from physical onboard sensors (Magnetometer, Accelerometer, Gyroscope). This raw data is combined with monotonic time markers, hashed via SHA-256, and injected back into the Linux entropy pool (`/dev/urandom`) via `ioctl` system calls to improve key generation quality.
 
 ### 5. Log and Snapshot Nullification
-MimicFS preemptively neutralizes persistent logging directories by mounting read-only or zero-sized memory-backed overlays on paths associated with tracking and forensic indicators:
+Log directories and tracing mechanisms are preemptively neutralized by mounting read-only or zero-sized memory-backed overlays on paths associated with tracking and forensic indicators:
 *   Usage Stats: `/data/system_ce/0/usagestats`
 *   Dropbox Diagnostics: `/data/system/dropbox`
 *   System Errors: `/data/tombstones` and `/data/anr`
@@ -67,13 +68,13 @@ MimicFS preemptively neutralizes persistent logging directories by mounting read
 
 | Parameter | Configuration / Algorithm |
 | :--- | :--- |
-| **Symmetric Cipher** | ChaCha20-Poly1305 (Native V Implementation) |
+| **Symmetric Cipher** | Dual-layer AES-CTR + ChaCha20-Poly1305 (Native V Implementation) |
 | **Header Encryption** | ChaCha20 Stream Cipher (Keys and IVs derived via PBKDF2) |
-| **Seed Derivation & Stretching** | PBKDF2-SHA3-512 (50,000 Iterations) |
+| **Seed Derivation & Stretching** | PBKDF2-SHA3-512 (5,000 Iterations, derived securely from Master Password) |
 | **Delay Function** | Memory-hard Sequential SHA-3-512 Post-Quantum VDF (16,384 Block Mixing Table) |
 | **Key wrapping KDF** | Argon2d (32MB Memory, 2 Iterations, 4 Threads) XOR-masked with VDF Output |
 | **VDF Metadata Protection** | Parameter structures XORed with Password-Salt SHA-3-512 keystream |
-| **Compression** | Gzip (Native V Implementation) |
+| **Compression** | Zstd (Chunk-level) & Gzip (Tarball-level) |
 | **Password Guard** | Offset-based Pointer Mapping over Shuffled Buffers |
 
 ---
