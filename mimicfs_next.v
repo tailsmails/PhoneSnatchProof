@@ -26,6 +26,9 @@ import crypto.rand as crand
 import x.crypto.chacha20
 import x.crypto.chacha20poly1305
 import compress.gzip
+import compress.zstd
+import crypto.aes
+import crypto.cipher
 
 const app_name := "MimicFS (PSP)"
 const app_ver := "3.0-PE"
@@ -56,6 +59,21 @@ fn (mut g PwGuard) free() {
 		unsafe { arr.free() }
 	}
 	unsafe { g.files.free() }
+}
+
+@[inline; must_use; direct_array_access; _hot]
+fn get_usage(path string) int {
+	res := os.execute('df ${path}')
+	if _unlikely_(res.exit_code != 0) {
+		return 0
+	}
+	parts := res.output.fields()
+	for p in parts {
+		if _likely_(p.ends_with('%')) {
+			return p.replace('%', '').int()
+		}
+	}
+	return 0
 }
 
 @[inline; must_use; direct_array_access; _cold]
@@ -648,7 +666,7 @@ fn unmount_temp_ram(tmp_ram_dir string) {
 }
 
 @[noinline; direct_array_access; _cold]
-fn start_app_core(pkg string, pw string, seed1 string, seed2 string) int {
+fn start_app_core(pkg string, pw string) int {
 	for b in pkg.bytes() {
 		if _unlikely_(!((b >= 97 && b <= 122) || (b >= 65 && b <= 90) || (b >= 48 && b <= 57) || b == 46 || b == 95)) {
 			return 1
@@ -729,7 +747,7 @@ fn start_app_core(pkg string, pw string, seed1 string, seed2 string) int {
 		temp_gz := '${tmp_ram_dir}/${pkg}.tar.gz'
 		temp_tar := '${tmp_ram_dir}/${pkg}.tar'
 		
-		locktime_decrypt_flow(vf, temp_gz, pw, seed1, seed2, pbkdf2_iterations, false, false) or {
+		locktime_decrypt_flow(vf, temp_gz, pw, pbkdf2_iterations, false, false) or {
 			error2('DECRYPTION ERROR: ' + err.msg())
 			run('umount -f ${safe_rp}')
 			run('umount -f ${safe_erp}')
@@ -782,7 +800,7 @@ fn start_app_core(pkg string, pw string, seed1 string, seed2 string) int {
 			temp_ext_gz := '${tmp_ram_dir}/${pkg}.ext.tar.gz'
 			temp_ext_tar := '${tmp_ram_dir}/${pkg}.ext.tar'
 			
-			locktime_decrypt_flow(evf, temp_ext_gz, pw, seed1, seed2, pbkdf2_iterations, false, false) or {
+			locktime_decrypt_flow(evf, temp_ext_gz, pw, pbkdf2_iterations, false, false) or {
 				error2('DECRYPTION ERROR: ' + err.msg())
 				run('umount -f ${safe_rp}')
 				run('umount -f ${safe_erp}')
@@ -836,23 +854,8 @@ fn start_app_core(pkg string, pw string, seed1 string, seed2 string) int {
 	return 0
 }
 
-@[inline; must_use; direct_array_access; _hot]
-fn get_usage(path string) int {
-	res := os.execute('df ${path}')
-	if _unlikely_(res.exit_code != 0) {
-		return 0
-	}
-	parts := res.output.fields()
-	for p in parts {
-		if _likely_(p.ends_with('%')) {
-			return p.replace('%', '').int()
-		}
-	}
-	return 0
-}
-
 @[noinline; direct_array_access; _cold]
-fn stop_app_core(pkg string, pw string, seed1 string, seed2 string) {
+fn stop_app_core(pkg string, pw string) {
 	pid := pkg.replace('.', '_')
 	dp := '/data/data/${pkg}'
 	rp := '/mnt/ram_${pid}'
@@ -892,7 +895,7 @@ fn stop_app_core(pkg string, pw string, seed1 string, seed2 string) {
 		}
 		secure_shred_file(temp_tar)
 		out_file := '/data/local/tmp/${pkg}.enc'
-		locktime_encrypt_flow(temp_gz, out_file, vdf_duration_sec, pw, seed1, seed2, argon_mem, argon_iter, argon_threads, 512, pbkdf2_iterations, true, vdf_is_pq, false) or {
+		locktime_encrypt_flow(temp_gz, out_file, vdf_duration_sec, pw, argon_mem, argon_iter, argon_threads, 512, pbkdf2_iterations, true, vdf_is_pq, false) or {
 			error2('ENCRYPTION ERROR: ' + err.msg())
 		}
 	}
@@ -908,7 +911,7 @@ fn stop_app_core(pkg string, pw string, seed1 string, seed2 string) {
 		}
 		secure_shred_file(temp_ext_tar)
 		out_ext_file := '/data/local/tmp/${pkg}.ext.enc'
-		locktime_encrypt_flow(temp_ext_gz, out_ext_file, vdf_duration_sec, pw, seed1, seed2, argon_mem, argon_iter, argon_threads, 512, pbkdf2_iterations, true, vdf_is_pq, false) or {
+		locktime_encrypt_flow(temp_ext_gz, out_ext_file, vdf_duration_sec, pw, argon_mem, argon_iter, argon_threads, 512, pbkdf2_iterations, true, vdf_is_pq, false) or {
 			error2('ENCRYPTION ERROR: ' + err.msg())
 		}
 	}
@@ -939,7 +942,7 @@ fn stop_app_core(pkg string, pw string, seed1 string, seed2 string) {
 }
 
 @[noinline; _cold]
-fn stop_nokill_core(pkg string, pw string, seed1 string, seed2 string) {
+fn stop_nokill_core(pkg string, pw string) {
 	pid := pkg.replace('.', '_')
 	rp := '/mnt/ram_${pid}'
 	erp := '/mnt/ext_${pid}'
@@ -958,7 +961,7 @@ fn stop_nokill_core(pkg string, pw string, seed1 string, seed2 string) {
 		}
 		secure_shred_file(temp_tar)
 		out_file := '/data/local/tmp/${pkg}.enc'
-		locktime_encrypt_flow(temp_gz, out_file, vdf_duration_sec, pw, seed1, seed2, argon_mem, argon_iter, argon_threads, 512, pbkdf2_iterations, true, vdf_is_pq, false) or {
+		locktime_encrypt_flow(temp_gz, out_file, vdf_duration_sec, pw, argon_mem, argon_iter, argon_threads, 512, pbkdf2_iterations, true, vdf_is_pq, false) or {
 			error2('ENCRYPTION ERROR: ' + err.msg())
 		}
 	}
@@ -973,7 +976,7 @@ fn stop_nokill_core(pkg string, pw string, seed1 string, seed2 string) {
 		}
 		secure_shred_file(temp_ext_tar)
 		out_ext_file := '/data/local/tmp/${pkg}.ext.enc'
-		locktime_encrypt_flow(temp_ext_gz, out_ext_file, vdf_duration_sec, pw, seed1, seed2, argon_mem, argon_iter, argon_threads, 512, pbkdf2_iterations, true, vdf_is_pq, false) or {
+		locktime_encrypt_flow(temp_ext_gz, out_ext_file, vdf_duration_sec, pw, argon_mem, argon_iter, argon_threads, 512, pbkdf2_iterations, true, vdf_is_pq, false) or {
 			error2('ENCRYPTION ERROR: ' + err.msg())
 		}
 	}
@@ -1183,7 +1186,7 @@ fn purge_all() {
 }
 
 @[inline; _cold]
-fn add_pkg_core(pkg string, pw string, seed1 string, seed2 string) {
+fn add_pkg_core(pkg string, pw string) {
 	pid := pkg.replace('.', '_')
 	f := '/data/local/tmp/${pid}.enc'
 
@@ -1191,16 +1194,16 @@ fn add_pkg_core(pkg string, pw string, seed1 string, seed2 string) {
 		fatal('DOUBLE_ADD: Package file already exists at ${f}')
 	}
 
-	start_app_core(pkg, pw, seed1, seed2)
+	start_app_core(pkg, pw)
 	time.sleep(1000 * time.millisecond)
-	stop_app_core(pkg, pw, seed1, seed2)
+	stop_app_core(pkg, pw)
 }
 
 @[inline; _cold]
-fn cpw_core(pkg string, pw string, new_pw string, seed1 string, seed2 string) {
-	start_app_core(pkg, pw, seed1, seed2)
+fn cpw_core(pkg string, pw string, new_pw string) {
+	start_app_core(pkg, pw)
 	time.sleep(1000 * time.millisecond)
-	stop_app_core(pkg, new_pw, seed1, seed2)
+	stop_app_core(pkg, new_pw)
 }
 
 @[noinline; _cold]
@@ -1475,14 +1478,14 @@ fn resize_app_tmpfs(pkg string, delta_mb int, ext bool) int {
 }
 
 @[inline; _cold]
-fn lock_all_core(pw string, seed1 string, seed2 string) {
+fn lock_all_core(pw string) {
 	mounts := os.read_file('/proc/mounts') or { return }
 	for line in mounts.split('\n') {
 		fields := line.split(' ')
 		if fields.len >= 2 && fields[1].starts_with('/mnt/ram_') {
 			pid := fields[1].replace('/mnt/ram_', '')
 			pkg := pid.replace('_', '.')
-			stop_app_core(pkg, pw, seed1, seed2)
+			stop_app_core(pkg, pw)
 		}
 	}
 }
@@ -1867,20 +1870,8 @@ fn event(e &tui.Event, x voidptr) {
 							back_to_termux()
 							return
 						}
-						seed1 := get_input_dialog('Set Seed 1', 'Puzzle Locator Key', true)
-						seed1_2 := get_input_dialog('Set Seed 1 Again', 'Puzzle Locator Key', true)
-						if seed1 == '' || seed1 != seed1_2 {
-							back_to_termux()
-							return
-						}
-						seed2 := get_input_dialog('Set Seed 2', 'Payload Locator Key', true)
-						seed2_2 := get_input_dialog('Set Seed 2 Again', 'Payload Locator Key', true)
-						if seed2 == '' || seed2 != seed2_2 {
-							back_to_termux()
-							return
-						}
 						back_to_termux()
-						add_pkg_core(pkg, pw, seed1, seed2)
+						add_pkg_core(pkg, pw)
 					}
 					1 {
 						pkg := get_input_dialog('Start App', 'Package Name', false)
@@ -1893,18 +1884,8 @@ fn event(e &tui.Event, x voidptr) {
 							back_to_termux()
 							return
 						}
-						seed1 := get_input_dialog('Enter Seed 1', 'Puzzle Locator Key', true)
-						if seed1 == '' {
-							back_to_termux()
-							return
-						}
-						seed2 := get_input_dialog('Enter Seed 2', 'Payload Locator Key', true)
-						if seed2 == '' {
-							back_to_termux()
-							return
-						}
 						back_to_termux()
-						start_app_core(pkg, pw, seed1, seed2)
+						start_app_core(pkg, pw)
 					}
 					2 {
 						pkg := get_input_dialog('Stop App', 'Package Name', false)
@@ -1918,20 +1899,8 @@ fn event(e &tui.Event, x voidptr) {
 							back_to_termux()
 							return
 						}
-						seed1 := get_input_dialog('Verify Seed 1', 'Puzzle Locator Key', true)
-						seed1_2 := get_input_dialog('Verify Seed 1 Again', 'Puzzle Locator Key', true)
-						if seed1 == '' || seed1 != seed1_2 {
-							back_to_termux()
-							return
-						}
-						seed2 := get_input_dialog('Verify Seed 2', 'Payload Locator Key', true)
-						seed2_2 := get_input_dialog('Verify Seed 2 Again', 'Payload Locator Key', true)
-						if seed2 == '' || seed2 != seed2_2 {
-							back_to_termux()
-							return
-						}
 						back_to_termux()
-						stop_app_core(pkg, pw, seed1, seed2)
+						stop_app_core(pkg, pw)
 					}
 					3 {
 						list_core()
@@ -1949,25 +1918,13 @@ fn event(e &tui.Event, x voidptr) {
 							back_to_termux()
 							return
 						}
-						seed1 := get_input_dialog('Verify Seed 1', 'Puzzle Locator Key', true)
-						seed1_2 := get_input_dialog('Verify Seed 1 Again', 'Puzzle Locator Key', true)
-						if seed1 == '' || seed1 != seed1_2 {
-							back_to_termux()
-							return
-						}
-						seed2 := get_input_dialog('Verify Seed 2', 'Payload Locator Key', true)
-						seed2_2 := get_input_dialog('Verify Seed 2 Again', 'Payload Locator Key', true)
-						if seed2 == '' || seed2 != seed2_2 {
-							back_to_termux()
-							return
-						}
 						new_pw := get_input_dialog('New Verify Key', 'Password', true)
 						if new_pw == '' {
 							back_to_termux()
 							return
 						}
 						back_to_termux()
-						cpw_core(pkg, pw, new_pw, seed1, seed2)
+						cpw_core(pkg, pw, new_pw)
 					}
 					5 {
 						pkg := get_input_dialog('Remove App', 'Package Name', false)
@@ -2000,20 +1957,8 @@ fn event(e &tui.Event, x voidptr) {
 							back_to_termux()
 							return
 						}
-						seed1 := get_input_dialog('Set Seed 1', 'Puzzle Locator Key', true)
-						seed1_2 := get_input_dialog('Set Seed 1 Again', 'Puzzle Locator Key', true)
-						if seed1 == '' || seed1 != seed1_2 {
-							back_to_termux()
-							return
-						}
-						seed2 := get_input_dialog('Set Seed 2', 'Payload Locator Key', true)
-						seed2_2 := get_input_dialog('Set Seed 2 Again', 'Payload Locator Key', true)
-						if seed2 == '' || seed2 != seed2_2 {
-							back_to_termux()
-							return
-						}
 						back_to_termux()
-						stop_nokill_core(pkg, pw, seed1, seed2)
+						stop_nokill_core(pkg, pw)
 					}
 					8 { exit(0) }
 					9 {
@@ -2077,20 +2022,8 @@ fn event(e &tui.Event, x voidptr) {
 							back_to_termux()
 							return
 						}
-						seed1 := get_input_dialog('Verify Seed 1', 'Puzzle Locator Key', true)
-						seed1_2 := get_input_dialog('Verify Seed 1 Again', 'Puzzle Locator Key', true)
-						if seed1 == '' || seed1 != seed1_2 {
-							back_to_termux()
-							return
-						}
-						seed2 := get_input_dialog('Verify Seed 2', 'Payload Locator Key', true)
-						seed2_2 := get_input_dialog('Verify Seed 2 Again', 'Payload Locator Key', true)
-						if seed2 == '' || seed2 != seed2_2 {
-							back_to_termux()
-							return
-						}
 						back_to_termux()
-						lock_all_core(pw, seed1, seed2)
+						lock_all_core(pw)
 					}
 					15 {
 						pkg := get_input_dialog('Unhide An App', 'Package Name', false)
@@ -2198,17 +2131,7 @@ fn cli_mode(args []string) {
 			if pw != pw2 {
 				fatal('Passwords do not match')
 			}
-			seed1 := read_pw('Seed 1 (Puzzle Key): ')
-			seed1_2 := read_pw('Seed 1 again: ')
-			if seed1 == '' || seed1 != seed1_2 {
-				fatal('Seeds 1 do not match')
-			}
-			seed2 := read_pw('Seed 2 (Payload Key): ')
-			seed2_2 := read_pw('Seed 2 again: ')
-			if seed2 == '' || seed2 != seed2_2 {
-				fatal('Seeds 2 do not match')
-			}
-			add_pkg_core(pkg, pw, seed1, seed2)
+			add_pkg_core(pkg, pw)
 		}
 		'start' {
 			if args.len < 2 {
@@ -2222,15 +2145,7 @@ fn cli_mode(args []string) {
 			if pw == '' {
 				fatal('Empty password')
 			}
-			seed1 := read_pw('Seed 1 (Puzzle Key): ')
-			if seed1 == '' {
-				fatal('Empty Seed 1')
-			}
-			seed2 := read_pw('Seed 2 (Payload Key): ')
-			if seed2 == '' {
-				fatal('Empty Seed 2')
-			}
-			exit(start_app_core(pkg, pw, seed1, seed2))
+			exit(start_app_core(pkg, pw))
 		}
 		'stop' {
 			if args.len < 2 {
@@ -2248,17 +2163,7 @@ fn cli_mode(args []string) {
 			if pw != pw2 {
 				fatal('Passwords do not match')
 			}
-			seed1 := read_pw('Seed 1 (Puzzle Key): ')
-			seed1_2 := read_pw('Seed 1 again: ')
-			if seed1 == '' || seed1 != seed1_2 {
-				fatal('Seeds 1 do not match')
-			}
-			seed2 := read_pw('Seed 2 (Payload Key): ')
-			seed2_2 := read_pw('Seed 2 again: ')
-			if seed2 == '' || seed2 != seed2_2 {
-				fatal('Seeds 2 do not match')
-			}
-			stop_app_core(pkg, pw, seed1, seed2)
+			stop_app_core(pkg, pw)
 		}
 		'forcestop' {
 			if args.len < 2 {
@@ -2286,17 +2191,7 @@ fn cli_mode(args []string) {
 			if pw != pw2 {
 				fatal('Passwords do not match')
 			}
-			seed1 := read_pw('Seed 1 (Puzzle Key): ')
-			seed1_2 := read_pw('Seed 1 again: ')
-			if seed1 == '' || seed1 != seed1_2 {
-				fatal('Seeds 1 do not match')
-			}
-			seed2 := read_pw('Seed 2 (Payload Key): ')
-			seed2_2 := read_pw('Seed 2 again: ')
-			if seed2 == '' || seed2 != seed2_2 {
-				fatal('Seeds 2 do not match')
-			}
-			stop_nokill_core(pkg, pw, seed1, seed2)
+			stop_nokill_core(pkg, pw)
 		}
 		'remove' {
 			if args.len < 2 {
@@ -2324,21 +2219,11 @@ fn cli_mode(args []string) {
 			if pw != pw2 {
 				fatal('Passwords do not match')
 			}
-			seed1 := read_pw('Seed 1 (Puzzle Key): ')
-			seed1_2 := read_pw('Seed 1 again: ')
-			if seed1 == '' || seed1 != seed1_2 {
-				fatal('Seeds 1 do not match')
-			}
-			seed2 := read_pw('Seed 2 (Payload Key): ')
-			seed2_2 := read_pw('Seed 2 again: ')
-			if seed2 == '' || seed2 != seed2_2 {
-				fatal('Seeds 2 do not match')
-			}
 			new_pw := read_pw('New password: ')
 			if new_pw == '' {
 				fatal('Empty password')
 			}
-			cpw_core(pkg, pw, new_pw, seed1, seed2)
+			cpw_core(pkg, pw, new_pw)
 		}
 		'list' {
 			list_core()
@@ -2355,17 +2240,7 @@ fn cli_mode(args []string) {
 			if pw != pw2 {
 				fatal('Passwords do not match')
 			}
-			seed1 := read_pw('Seed 1 (Puzzle Key): ')
-			seed1_2 := read_pw('Seed 1 again: ')
-			if seed1 == '' || seed1 != seed1_2 {
-				fatal('Seeds 1 do not match')
-			}
-			seed2 := read_pw('Seed 2 (Payload Key): ')
-			seed2_2 := read_pw('Seed 2 again: ')
-			if seed2 == '' || seed2 != seed2_2 {
-				fatal('Seeds 2 do not match')
-			}
-			lock_all_core(pw, seed1, seed2)
+			lock_all_core(pw)
 		}
 		'resize' {
 			if args.len < 2 {
@@ -3012,23 +2887,66 @@ fn openssl_decrypt_header(enc_header_bytes []u8, key_hex string, iv_hex string) 
 fn encrypt_chunk(chunk_data []u8, key []u8, iv []u8, chunk_index u64, use_compression bool) ![]u8 {
 	mut data := chunk_data.clone()
 	if use_compression {
-		data = gzip.compress(data)!
+		data = zstd.compress(data)!
 	}
+	
+	mut aes_key := key.clone()
+	mut chunk_aes_iv := iv.clone()
+	if chunk_aes_iv.len < 16 {
+		return error('salty: invalid AES IV length')
+	}
+	write_u64_to_buf(mut chunk_aes_iv, chunk_index, 8)
+	
+	block := aes.new_cipher(aes_key)
+	mut ctr := cipher.new_ctr(block, chunk_aes_iv)
+	
+	mut aes_encrypted := []u8{len: data.len}
+	ctr.xor_key_stream(mut aes_encrypted, data)
+	
 	mut chunk_nonce := []u8{len: 12, init: 0}
 	for i in 0 .. 4 { chunk_nonce[i] = iv[i] }
 	write_u64_to_buf(mut chunk_nonce, chunk_index, 4)
-	return chacha20poly1305.encrypt(data, key, chunk_nonce, []u8{})!
+	
+	mut chacha_key_input := []u8{cap: key.len + 6}
+	for b in key { chacha_key_input << b }
+	for b in "chacha".bytes() { chacha_key_input << b }
+	chacha_key_hash := sha3.sum512(chacha_key_input)
+	chacha_key := chacha_key_hash[0..32].clone()
+	
+	return chacha20poly1305.encrypt(aes_encrypted, chacha_key, chunk_nonce, []u8{})!
 }
 
 fn decrypt_chunk(cipher_bytes []u8, key []u8, iv []u8, chunk_index u64, use_compression bool) ![]u8 {
 	mut chunk_nonce := []u8{len: 12, init: 0}
 	for i in 0 .. 4 { chunk_nonce[i] = iv[i] }
 	write_u64_to_buf(mut chunk_nonce, chunk_index, 4)
-	mut decrypted := chacha20poly1305.decrypt(cipher_bytes, key, chunk_nonce, []u8{}) or {
-		return error('Chunk decryption failed')
+	
+	mut chacha_key_input := []u8{cap: key.len + 6}
+	for b in key { chacha_key_input << b }
+	for b in "chacha".bytes() { chacha_key_input << b }
+	chacha_key_hash := sha3.sum512(chacha_key_input)
+	chacha_key := chacha_key_hash[0..32].clone()
+	
+	mut aes_encrypted := chacha20poly1305.decrypt(cipher_bytes, chacha_key, chunk_nonce, []u8{}) or {
+		return error('salty: chunk payload decryption failed (chacha layer)')
 	}
+	
+	mut aes_key := key.clone()
+	
+	mut chunk_aes_iv := iv.clone()
+	if chunk_aes_iv.len < 16 {
+		return error('salty: invalid AES IV length')
+	}
+	write_u64_to_buf(mut chunk_aes_iv, chunk_index, 8)
+	
+	block := aes.new_cipher(aes_key)
+	mut ctr := cipher.new_ctr(block, chunk_aes_iv)
+	
+	mut decrypted := []u8{len: aes_encrypted.len}
+	ctr.xor_key_stream(mut decrypted, aes_encrypted)
+	
 	if use_compression {
-		decrypted = gzip.decompress(decrypted)!
+		decrypted = zstd.decompress(decrypted)!
 	}
 	return decrypted
 }
@@ -3136,11 +3054,10 @@ fn secure_shred_file(path string) {
 }
 
 fn locktime_encrypt_flow(file_path string, out_path string, duration_sec u64,
-password string, seed1_str string, seed2_str string, mem u32, iter u32, threads
-u8, prime_bits int, pbkdf2_iter int, shred_orig bool, is_pq bool,
-use_compression bool) ! { 
+password string, mem u32, iter u32, threads u8, prime_bits int, pbkdf2_iter int, 
+shred_orig bool, is_pq bool, use_compression bool) ! { 
 	_ = prime_bits
-	_ = is_pq // We always enforce memory-hard delay logic now!
+	_ = is_pq
 	
 	if !os.exists(file_path) { return error('Input file does not exist: ${file_path}') } 
 
@@ -3148,6 +3065,10 @@ use_compression bool) ! {
 	defer { infile.close() }
 	mut outfile := os.create(out_path)!
 	defer { outfile.close() }
+	
+	seed0_derived := pbkdf2_sha3_512(password.bytes(), 'mimicfs_seed0_salt'.bytes(), 5000, 32).hex()
+	seed1_derived := pbkdf2_sha3_512(password.bytes(), 'mimicfs_seed1_salt'.bytes(), 5000, 32).hex()
+	seed2_derived := pbkdf2_sha3_512(password.bytes(), 'mimicfs_seed2_salt'.bytes(), 5000, 32).hex()
 
 	file_salt := secure_random_bytes(32)!
 	outfile.write(file_salt)!
@@ -3207,10 +3128,10 @@ use_compression bool) ! {
 	lock_memory(mut session_iv)
 	defer { unlock_memory(mut session_iv); zeroize(mut session_iv) }
 
-	mut seed_bytes1 := derive_seed1(seed1_str, file_salt, pbkdf2_iter)!
+	mut seed_bytes1 := derive_seed1(seed1_derived, file_salt, pbkdf2_iter)!
 	defer { unlock_memory(mut seed_bytes1); zeroize(mut seed_bytes1) }
 
-	mut seed_bytes2 := derive_seed2(seed2_str, w_trapdoor_bytes, pbkdf2_iter)!
+	mut seed_bytes2 := derive_seed2(seed2_derived, w_trapdoor_bytes, pbkdf2_iter)!
 	defer { unlock_memory(mut seed_bytes2); zeroize(mut seed_bytes2) }
 
 	chunk_size := 1024 * 1024
@@ -3242,7 +3163,7 @@ use_compression bool) ! {
 	for b in file_salt { key_seed0_salt << b }
 	for b in "seed0key".bytes() { key_seed0_salt << b }
 	
-	mut key_seed0 := argon2.d_key(seed1_str.bytes(), key_seed0_salt, 3, 32768, 2, 32)!
+	mut key_seed0 := argon2.d_key(seed0_derived.bytes(), key_seed0_salt, 3, 32768, 2, 32)!
 	lock_memory(mut key_seed0)
 	defer { unlock_memory(mut key_seed0); zeroize(mut key_seed0) }
 	
@@ -3337,8 +3258,7 @@ use_compression bool) ! {
 }
 
 fn locktime_decrypt_flow(file_path string, out_path string, password string,
-seed1_str string, seed2_str string, pbkdf2_iter int, shred_orig bool,
-use_compression bool) ! { 
+pbkdf2_iter int, shred_orig bool, use_compression bool) ! { 
 	_ = use_compression
 	
 	if !os.exists(file_path) { return error('Input file does not exist: ${file_path}') } 
@@ -3348,6 +3268,10 @@ use_compression bool) ! {
 	defer { infile.close() }
 	mut outfile := os.create(out_path)!
 	defer { outfile.close() }
+	
+	seed0_derived := pbkdf2_sha3_512(password.bytes(), 'mimicfs_seed0_salt'.bytes(), 5000, 32).hex()
+	seed1_derived := pbkdf2_sha3_512(password.bytes(), 'mimicfs_seed1_salt'.bytes(), 5000, 32).hex()
+	seed2_derived := pbkdf2_sha3_512(password.bytes(), 'mimicfs_seed2_salt'.bytes(), 5000, 32).hex()
 
 	println('[*] Reading binary file...')
 	mut file_salt := []u8{len: 32}
@@ -3412,7 +3336,7 @@ use_compression bool) ! {
 	if n_mixed < int(mixed_len) { return error('Failed to read interleaved block!') }
 
 	total_len := mixed.len
-	mut seed_bytes1 := derive_seed1(seed1_str, file_salt, pbkdf2_iter)!
+	mut seed_bytes1 := derive_seed1(seed1_derived, file_salt, pbkdf2_iter)!
 	defer { unlock_memory(mut seed_bytes1); zeroize(mut seed_bytes1) }
 
 	mut all_indices := []int{len: total_len}
@@ -3457,7 +3381,7 @@ use_compression bool) ! {
 	for b in file_salt { key_seed0_salt << b }
 	for b in "seed0key".bytes() { key_seed0_salt << b }
 	
-	mut key_seed0 := argon2.d_key(seed1_str.bytes(), key_seed0_salt, 3, 32768, 2, 32)!
+	mut key_seed0 := argon2.d_key(seed0_derived.bytes(), key_seed0_salt, 3, 32768, 2, 32)!
 	lock_memory(mut key_seed0)
 	defer { unlock_memory(mut key_seed0); zeroize(mut key_seed0) }
 
@@ -3496,7 +3420,7 @@ use_compression bool) ! {
 	lock_memory(mut session_iv)
 	defer { unlock_memory(mut session_iv); zeroize(mut session_iv) }
 
-	mut seed_bytes2 := derive_seed2(seed2_str, x_bytes, pbkdf2_iter)!
+	mut seed_bytes2 := derive_seed2(seed2_derived, x_bytes, pbkdf2_iter)!
 	defer { unlock_memory(mut seed_bytes2); zeroize(mut seed_bytes2) }
 
 	mut shuffle_rng2 := SecurePRNG{seed: seed_bytes2}
