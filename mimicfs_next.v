@@ -2411,19 +2411,17 @@ fn protect_termux_from_oom() int {
 
 __global app_secret_pepper = ''
 fn main() {
-	unsafe {
-		app_secret_pepper = read_pw('Enter App Master Key: ')
-	}
-	if app_secret_pepper == '' {
-		fatal('Master Key cannot be empty')
-	}
-
 	args := os.args[1..]
-
+	
 	if args.len > 0 {
-		cli_mode(args)
-		return
-	}
+		if args[0] != 'purge' {
+			app_secret_pepper = read_pw('Enter App Master Key: ')
+			if app_secret_pepper == '' {
+				fatal('Master Key cannot be empty')
+			}
+		} else { app_secret_pepper = '0' }
+		cli_mode(args); return
+	} else { app_secret_pepper = read_pw('Enter App Master Key: ') }
 	
 	protect_termux_from_oom()
 	check_dp(true)
