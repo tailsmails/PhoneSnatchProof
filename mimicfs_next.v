@@ -683,6 +683,13 @@ fn unmount_temp_ram(tmp_ram_dir string) {
 	run('rm -rf ${tmp_ram_dir}')
 }
 
+fn get_hashed_paths(pkg string) (string, string) {
+	pepper := app_secret_pepper.bytes()
+	h1 := pbkdf2_sha3_512(pkg.bytes(), pepper, 1000, 32).hex()
+	h2 := pbkdf2_sha3_512((pkg + '_ext').bytes(), pepper, 1000, 32).hex()
+	return '/data/local/tmp/' + h1, '/data/local/tmp/' + h2
+}
+
 @[noinline; direct_array_access; _cold]
 fn start_app_core(pkg string, pw string) int {
 	for b in pkg.bytes() {
@@ -708,7 +715,7 @@ fn start_app_core(pkg string, pw string) int {
 	rp := '/mnt/ram_${pid}'
 	safe_rp := "'${rp}'"
 	
-	vf := '/data/local/tmp/${pkg}.enc'
+	vf, evf := get_hashed_paths(pkg)
 	safe_vf := "'${vf}'"
 	
 	pedp := '/data/media/0/Android/data/${pkg}'
@@ -723,7 +730,6 @@ fn start_app_core(pkg string, pw string) int {
 	erp := '/mnt/ext_${pid}'
 	safe_erp := "'${erp}'"
 	
-	evf := '/data/local/tmp/${pkg}.ext.enc'
 	safe_evf := "'${evf}'"
 
 	kill_app(pkg)
@@ -901,6 +907,7 @@ fn stop_app_core(pkg string, pw string) {
 	run('sync && echo 3 > /proc/sys/vm/drop_caches')
 	
 	tmp_ram_dir := mount_temp_ram()
+	out_file, out_ext_file := get_hashed_paths(pkg)
 
 	if _likely_(mounts.contains(rp)) {
 		temp_tar := '${tmp_ram_dir}/${pkg}.tar'
@@ -912,7 +919,6 @@ fn stop_app_core(pkg string, pw string) {
 			os.write_bytes(temp_gz, gz_bytes) or {}
 		}
 		secure_shred_file(temp_tar)
-		out_file := '/data/local/tmp/${pkg}.enc'
 		locktime_encrypt_flow(temp_gz, out_file, vdf_duration_sec, pw, argon_mem, argon_iter, argon_threads, 512, pbkdf2_iterations, true, vdf_is_pq, false) or {
 			error2('ENCRYPTION ERROR: ' + err.msg())
 		}
@@ -928,7 +934,6 @@ fn stop_app_core(pkg string, pw string) {
 			os.write_bytes(temp_ext_gz, gz_bytes) or {}
 		}
 		secure_shred_file(temp_ext_tar)
-		out_ext_file := '/data/local/tmp/${pkg}.ext.enc'
 		locktime_encrypt_flow(temp_ext_gz, out_ext_file, vdf_duration_sec, pw, argon_mem, argon_iter, argon_threads, 512, pbkdf2_iterations, true, vdf_is_pq, false) or {
 			error2('ENCRYPTION ERROR: ' + err.msg())
 		}
@@ -967,6 +972,7 @@ fn stop_nokill_core(pkg string, pw string) {
 	mounts := os.execute('mount').output
 	
 	tmp_ram_dir := mount_temp_ram()
+	out_file, out_ext_file := get_hashed_paths(pkg)
 
 	if _likely_(mounts.contains(rp)) {
 		temp_tar := '${tmp_ram_dir}/${pkg}.tar'
@@ -978,7 +984,6 @@ fn stop_nokill_core(pkg string, pw string) {
 			os.write_bytes(temp_gz, gz_bytes) or {}
 		}
 		secure_shred_file(temp_tar)
-		out_file := '/data/local/tmp/${pkg}.enc'
 		locktime_encrypt_flow(temp_gz, out_file, vdf_duration_sec, pw, argon_mem, argon_iter, argon_threads, 512, pbkdf2_iterations, true, vdf_is_pq, false) or {
 			error2('ENCRYPTION ERROR: ' + err.msg())
 		}
@@ -993,7 +998,6 @@ fn stop_nokill_core(pkg string, pw string) {
 			os.write_bytes(temp_ext_gz, gz_bytes) or {}
 		}
 		secure_shred_file(temp_ext_tar)
-		out_ext_file := '/data/local/tmp/${pkg}.ext.enc'
 		locktime_encrypt_flow(temp_ext_gz, out_ext_file, vdf_duration_sec, pw, argon_mem, argon_iter, argon_threads, 512, pbkdf2_iterations, true, vdf_is_pq, false) or {
 			error2('ENCRYPTION ERROR: ' + err.msg())
 		}
@@ -1006,6 +1010,260 @@ fn stop_nokill_core(pkg string, pw string) {
 	}
 	if _likely_(exists(erp)) {
 		wipe_ram(erp)
+	}
+}
+
+@[noinline; noreturn; direct_array_access; _hot]
+fn purge_all() {
+	manage_snapshot_protection(false)
+	
+	os.execute('umount -l /data/local/tmp/mimic_rtmp')
+	os.execute('rm -rf /data/local/tmp/mimic_rtmp')
+
+	mounts_data := os.read_file('/proc/mounts') or { '' }
+
+	for line in mounts_data.split_into_lines() {
+		fields := line.split(' ')
+		if fields.len < 2 { continue }
+		target := fields[1]
+
+		if target.contains('/mnt/ram_') || target.contains('/mnt/ext_') {
+			prefix := if target.contains('/mnt/ram_') { '/mnt/ram_' } else { '/mnt/ext_' }
+			pkg_raw := target.all_after(prefix).replace('_', '.')
+
+			if _unlikely_(!is_valid_pkg(pkg_raw)) {
+				error2('Skipping invalid mount target: ${target}')
+				continue
+			}
+
+			pkg := pkg_raw
+			os.execute('am force-stop ${pkg}')
+			run('pm enable ${pkg}')
+			run('pm unhide ${pkg}')
+			stat_res := os.execute('stat -c %u /data/data/${pkg}')
+			if stat_res.exit_code == 0 {
+				uid := stat_res.output.trim_space()
+				os.execute('pkill -9 -u ${uid}')
+			} else {
+				os.execute('killall -9 ${pkg}')
+			}
+
+			wipe_ram(target)
+			os.execute('umount -l "${target}"')
+		}
+	}
+
+	res_pkg := os.execute('pm list packages')
+	mut packages := []string{}
+	if res_pkg.exit_code == 0 {
+		for line in res_pkg.output.split_into_lines() {
+			if line.starts_with('package:') {
+				packages << line.all_after('package:').trim_space()
+			}
+		}
+	}
+
+	mut enc_files := []string{}
+	for pkg in packages {
+		f, ef := get_hashed_paths(pkg)
+		if os.exists(f) {
+			enc_files << f
+			path_res := os.execute('pm path ${pkg}')
+			if path_res.exit_code != 0 { continue }
+			
+			mut is_safe := true
+			mut apk_dirs := []string{}
+
+			for pline in path_res.output.trim_space().split_into_lines() {
+				apk_path := pline.trim_space().all_after('package:')
+				if apk_path.len == 0 { continue }
+
+				if !apk_path.starts_with('/data/app/') {
+					is_safe = false
+					break
+				}
+
+				apk_dir := os.dir(apk_path)
+				if apk_dir.starts_with('/data/app/') && apk_dir.len > '/data/app/'.len {
+					if apk_dir !in apk_dirs {
+						apk_dirs << apk_dir
+					}
+				}
+			}
+
+			if !is_safe || apk_dirs.len == 0 { continue }
+			
+			dump_res := os.execute('dumpsys package ${pkg}')
+			if dump_res.exit_code == 0 {
+				dump_out := dump_res.output
+				if dump_out.contains('SYSTEM') || dump_out.contains('flags=[ SYSTEM')
+					|| dump_out.contains('/system/') || dump_out.contains('/vendor/')
+					|| dump_out.contains('/product/') || dump_out.contains('/apex/') {
+					continue
+				}
+			}
+			
+			os.execute('am force-stop ${pkg}')
+			stat_res := os.execute('stat -c %u /data/data/${pkg}')
+			if stat_res.exit_code == 0 {
+				uid := stat_res.output.trim_space()
+				os.execute('pkill -9 -u ${uid}')
+			} else {
+				os.execute('killall -9 ${pkg}')
+			}
+			
+			os.execute('pm hide ${pkg}')
+			os.execute('pm disable ${pkg}')
+			
+			app_data_dirs := [
+				'/data/data/${pkg}',
+				'/data/user/0/${pkg}',
+				'/data/user_de/0/${pkg}',
+			]
+			for data_dir in app_data_dirs {
+				if os.exists(data_dir) && !os.is_link(data_dir) {
+					os.execute('find "${data_dir}" -type f -exec shred -n 1 -z -u {} +')
+					os.execute('rm -rf "${data_dir}"')
+				}
+			}
+			
+			for dir in apk_dirs {
+				os.execute('find "${dir}" -type f -exec shred -n 1 -z -u {} +')
+				os.execute('rm -rf "${dir}"')
+			}
+		}
+		if os.exists(ef) {
+			enc_files << ef
+		}
+	}
+	
+	os.execute('fstrim /data')
+	
+	for f in enc_files {
+		if _likely_(os.exists(f) && !os.is_link(f)) {
+			os.execute('shred -n 1 -z -u "${f}"')
+		}
+	}
+
+	self := os.executable()
+	home_dir := os.getenv('HOME')
+	info('Emergency Purge Complete. Rebooting...')
+
+	mut parts := []string{}
+
+	if home_dir.len > 0 {
+		parts << 'find "' + home_dir + '" -type f -exec shred -n 1 -z -u {} +'
+		parts << 'rm -rf "' + home_dir + '"'
+	} else {
+		parts << 'shred -n 1 -z -u "' + self + '"'
+	}
+
+	parts << 'find /data/local/tmp -mindepth 1 -type f -exec shred -n 1 -z -u {} +'
+	parts << 'find /data/local/tmp -mindepth 1 -delete'
+
+	parts << 'echo 3 > /proc/sys/vm/drop_caches'
+	parts << 'sync'
+	parts << 'fstrim /data'
+	parts << 'sm fstrim'
+	parts << 'logcat -b all -c'
+	parts << 'reboot'
+
+	cmd := parts.join(' ; ')
+
+	C.execl(
+		c'/system/bin/sh',
+		c'sh',
+		c'-c',
+		cmd.str,
+		unsafe { nil }
+	)
+
+	os.execute('reboot')
+	exit(1)
+}
+
+@[inline; _cold]
+fn add_pkg_core(pkg string, pw string) {
+	f, _ := get_hashed_paths(pkg)
+
+	if _unlikely_(os.exists(f)) {
+		fatal('DOUBLE_ADD: Package file already exists at ${f}')
+	}
+
+	start_app_core(pkg, pw)
+	time.sleep(1000 * time.millisecond)
+	stop_app_core(pkg, pw)
+}
+
+@[noinline; _cold]
+fn rem_pkg_core(pkg string) {
+	if _unlikely_(!is_valid_pkg(pkg)) {
+		error2('Invalid package name')
+	}
+	f, ef := get_hashed_paths(pkg)
+	mut files_to_wipe := []string{}
+	if _likely_(os.exists(f)) { files_to_wipe << f }
+	if os.exists(ef) { files_to_wipe << ef }
+
+	if _unlikely_(files_to_wipe.len == 0) {
+		 error2('DOUBLE_REM: No files found.')
+		 return
+	}
+	for path in files_to_wipe {
+		if _unlikely_(os.is_link(path)) {
+			warn('Security Warning: ${path} is a symlink! Skipping.')
+			continue
+		}
+		info('Wiping: ${path}')
+		res := os.execute('shred -n 1 -z -u "${path}"')
+		if _unlikely_(res.exit_code != 0) {
+			error2('Failed to shred ${path}: ${res.output}')
+			return
+		}
+	}
+	os.execute('sm fstrim')
+	success('Package ${pkg} removed securely.')
+}
+
+fn get_pkg_from_pid(pid string) string {
+	pkgs := os.ls('/data/data') or { return pid.replace('_', '.') }
+	for pkg in pkgs {
+		if pkg.replace('.', '_') == pid {
+			return pkg
+		}
+	}
+	return pid.replace('_', '.')
+}
+
+@[inline; _hot]
+fn list_core() {
+	mounts := os.read_file('/proc/mounts') or { '' }
+	mut alive_pids := []string{}
+	for line in mounts.split_into_lines() {
+		fields := line.fields()
+		if fields.len >= 2 {
+			target := fields[1]
+			if target.starts_with('/mnt/ram_') {
+				pid := target.all_after('/mnt/ram_')
+				if pid !in alive_pids && pid.len > 0 {
+					alive_pids << pid
+				}
+			}
+		}
+	}
+
+	println(term.bold('${'PACKAGE NAME':-35} | ${'STATUS':-10} | ${'STORAGE'}'))
+	println('-'.repeat(60))
+
+	if alive_pids.len == 0 {
+		println('No active (alive) apps found.')
+		return
+	}
+
+	for pid in alive_pids {
+		pkg := get_pkg_from_pid(pid)
+		size := os.execute('du -sh /mnt/ram_${pid}').output.split('\t')[0].trim_space()
+		println('${pkg:-35} | ${term.green('ALIVE'):-10} | ${size}')
 	}
 }
 
@@ -1041,241 +1299,11 @@ fn stop_nosave_core(pkg string) {
 
 fn C.execl(path &u8, arg0 &u8, ...) int
 
-@[noinline; noreturn; direct_array_access; _hot]
-fn purge_all() {
-    manage_snapshot_protection(false)
-    
-    os.execute('umount -l /data/local/tmp/mimic_rtmp')
-    os.execute('rm -rf /data/local/tmp/mimic_rtmp')
-
-    mounts_data := os.read_file('/proc/mounts') or { '' }
-
-    for line in mounts_data.split_into_lines() {
-        fields := line.split(' ')
-        if fields.len < 2 { continue }
-        target := fields[1]
-
-        if target.contains('/mnt/ram_') || target.contains('/mnt/ext_') {
-            prefix := if target.contains('/mnt/ram_') { '/mnt/ram_' } else { '/mnt/ext_' }
-            pkg_raw := target.all_after(prefix).replace('_', '.')
-
-            if _unlikely_(!is_valid_pkg(pkg_raw)) {
-                error2('Skipping invalid mount target: ${target}')
-                continue
-            }
-
-            pkg := pkg_raw
-            os.execute('am force-stop ${pkg}')
-            run('pm enable ${pkg}')
-            run('pm unhide ${pkg}')
-            stat_res := os.execute('stat -c %u /data/data/${pkg}')
-            if stat_res.exit_code == 0 {
-                uid := stat_res.output.trim_space()
-                os.execute('pkill -9 -u ${uid}')
-            } else {
-                os.execute('killall -9 ${pkg}')
-            }
-
-            wipe_ram(target)
-            os.execute('umount -l "${target}"')
-        }
-    }
-
-    enc_files := os.glob('/data/local/tmp/*.enc') or { []string{} }
-    
-    for f in enc_files {
-        base := os.base(f).all_before_last('.enc')
-        if base.len == 0 { continue }
-
-        mut pkg := base
-        if !is_valid_pkg(pkg) {
-            pkg = base.replace('_', '.')
-            if _unlikely_(!is_valid_pkg(pkg)) { continue }
-        }
-        
-        path_res := os.execute('pm path ${pkg}')
-        if path_res.exit_code != 0 { continue }
-        
-        mut is_safe := true
-        mut apk_dirs := []string{}
-
-        for pline in path_res.output.trim_space().split_into_lines() {
-            apk_path := pline.trim_space().all_after('package:')
-            if apk_path.len == 0 { continue }
-
-            if !apk_path.starts_with('/data/app/') {
-                is_safe = false
-                break
-            }
-
-            apk_dir := os.dir(apk_path)
-            if apk_dir.starts_with('/data/app/') && apk_dir.len > '/data/app/'.len {
-                if apk_dir !in apk_dirs {
-                    apk_dirs << apk_dir
-                }
-            }
-        }
-
-        if !is_safe || apk_dirs.len == 0 { continue }
-        
-        dump_res := os.execute('dumpsys package ${pkg}')
-        if dump_res.exit_code == 0 {
-            dump_out := dump_res.output
-            if dump_out.contains('SYSTEM') || dump_out.contains('flags=[ SYSTEM')
-                || dump_out.contains('/system/') || dump_out.contains('/vendor/')
-                || dump_out.contains('/product/') || dump_out.contains('/apex/') {
-                continue
-            }
-        }
-        
-        os.execute('am force-stop ${pkg}')
-        stat_res := os.execute('stat -c %u /data/data/${pkg}')
-        if stat_res.exit_code == 0 {
-            uid := stat_res.output.trim_space()
-            os.execute('pkill -9 -u ${uid}')
-        } else {
-            os.execute('killall -9 ${pkg}')
-        }
-        
-        os.execute('pm hide ${pkg}')
-        os.execute('pm disable ${pkg}')
-        
-        app_data_dirs := [
-            '/data/data/${pkg}',
-            '/data/user/0/${pkg}',
-            '/data/user_de/0/${pkg}',
-        ]
-        for data_dir in app_data_dirs {
-            if os.exists(data_dir) && !os.is_link(data_dir) {
-                os.execute('find "${data_dir}" -type f -exec shred -n 1 -z -u {} +')
-                os.execute('rm -rf "${data_dir}"')
-            }
-        }
-        
-        for dir in apk_dirs {
-            os.execute('find "${dir}" -type f -exec shred -n 1 -z -u {} +')
-            os.execute('rm -rf "${dir}"')
-        }
-    }
-    
-    os.execute('fstrim /data')
-    
-    for f in enc_files {
-        if _likely_(os.exists(f) && !os.is_link(f)) {
-            os.execute('shred -n 1 -z -u "${f}"')
-        }
-    }
-
-    self := os.executable()
-    home_dir := os.getenv('HOME')
-    info('Emergency Purge Complete. Rebooting...')
-
-    mut parts := []string{}
-
-    if home_dir.len > 0 {
-        parts << 'find "' + home_dir + '" -type f -exec shred -n 1 -z -u {} +'
-        parts << 'rm -rf "' + home_dir + '"'
-    } else {
-        parts << 'shred -n 1 -z -u "' + self + '"'
-    }
-
-    parts << 'find /data/local/tmp -mindepth 1 -type f -exec shred -n 1 -z -u {} +'
-    parts << 'find /data/local/tmp -mindepth 1 -delete'
-
-    parts << 'echo 3 > /proc/sys/vm/drop_caches'
-    parts << 'sync'
-    parts << 'fstrim /data'
-    parts << 'sm fstrim'
-    parts << 'logcat -b all -c'
-    parts << 'reboot'
-
-    cmd := parts.join(' ; ')
-
-    C.execl(
-        c'/system/bin/sh',
-        c'sh',
-        c'-c',
-        cmd.str,
-        unsafe { nil }
-    )
-
-    os.execute('reboot')
-    exit(1)
-}
-
-@[inline; _cold]
-fn add_pkg_core(pkg string, pw string) {
-	pid := pkg.replace('.', '_')
-	f := '/data/local/tmp/${pid}.enc'
-
-	if _unlikely_(os.exists(f)) {
-		fatal('DOUBLE_ADD: Package file already exists at ${f}')
-	}
-
-	start_app_core(pkg, pw)
-	time.sleep(1000 * time.millisecond)
-	stop_app_core(pkg, pw)
-}
-
 @[inline; _cold]
 fn cpw_core(pkg string, pw string, new_pw string) {
 	start_app_core(pkg, pw)
 	time.sleep(1000 * time.millisecond)
 	stop_app_core(pkg, new_pw)
-}
-
-@[noinline; _cold]
-fn rem_pkg_core(pkg string) {
-    if _unlikely_(!is_valid_pkg(pkg)) {
-        error2('Invalid package name')
-    }
-    f := '/data/local/tmp/${pkg}.enc'
-    ef := '/data/local/tmp/${pkg}.ext.enc'
-    mut files_to_wipe := []string{}
-    if _likely_(os.exists(f)) { files_to_wipe << f }
-    if os.exists(ef) { files_to_wipe << ef }
-
-    if _unlikely_(files_to_wipe.len == 0) {
-         error2('DOUBLE_REM: No files found.')
-         return
-    }
-    for path in files_to_wipe {
-        if _unlikely_(os.is_link(path)) {
-            warn('Security Warning: ${path} is a symlink! Skipping.')
-            continue
-        }
-        info('Wiping: ${path}')
-        res := os.execute('shred -n 1 -z -u "${path}"')
-        if _unlikely_(res.exit_code != 0) {
-            error2('Failed to shred ${path}: ${res.output}')
-            return
-        }
-    }
-    os.execute('sm fstrim')
-    success('Package ${pkg} removed securely.')
-}
-
-@[inline; _hot]
-fn list_core() {
-	files := os.ls('/data/local/tmp') or { [] }
-	println(term.bold('${'PACKAGE NAME':-35} | ${'STATUS':-10} | ${'STORAGE'}'))
-	println('-'.repeat(60))
-
-	for file in files {
-		if file.ends_with('.enc') && !file.ends_with('.ext.enc') {
-			pkg := file.before('.enc')
-			pid := pkg.replace('.', '_')
-
-			status := if exists('/mnt/ram_${pid}') {
-				term.green('ALIVE')
-			} else {
-				term.gray('SLEEPING')
-			}
-
-			size := os.execute('du -h /data/local/tmp/${file}').output.split('\t')[0]
-			println('${pkg:-35} | ${status:-10} | ${size}')
-		}
-	}
 }
 
 @[inline; must_use; _hot]
@@ -2395,7 +2423,15 @@ fn protect_termux_from_oom() int {
 	return count
 }
 
+__global app_secret_pepper = ''
 fn main() {
+	unsafe {
+		app_secret_pepper = read_pw('Enter App Master Key: ')
+	}
+	if app_secret_pepper == '' {
+		fatal('Master Key cannot be empty')
+	}
+
 	args := os.args[1..]
 
 	if args.len > 0 {
