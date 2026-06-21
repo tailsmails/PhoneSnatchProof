@@ -132,16 +132,16 @@ fn (g PwGuard) decode(pointer_str string) !string {
 
 @[inline; _hot]
 fn send_notification(title string, message string) {
+	escaped_title := title.replace("'", "'\\''")
+	escaped_message := message.replace("'", "'\\''")
+	cmd_str := "cmd notification post -S bigtext -t '" + escaped_title + "' 'Security_Monitor' '" + escaped_message + "'"
+
 	os.exec([
 		'su',
 		'-lp',
 		'2000',
 		'-c',
-		r'cmd notification post -S bigtext -t "$1" "Security_Monitor" "$2"',
-		'--',
-		'sh',
-		title,
-		message
+		cmd_str
 	])
 }
 
@@ -183,7 +183,21 @@ fn disable_sim_toolkit() {
 	}
 }
 
-@[inline; direct_array_access; _cold]
+#include <signal.h>
+fn C.kill(pid int, sig int) int
+
+fn safe_kill(pid int, expected_path string) bool {
+	if expected_path.len == 0 {
+		return false
+	}
+	current_path := os.readlink('/proc/$pid/exe') or { '' }
+	if current_path == expected_path {
+		C.kill(pid, 9)
+		return true
+	}
+	return false
+}
+
 fn despy() {
 	println('${term.cyan('DeSpy 1.4')}')
 
@@ -280,7 +294,7 @@ fn despy() {
 
 				ppid := get_ppid(pid_i)
 				if ppid in rild_pids {
-					exe_path := os.execute('readlink /proc/$pid_s/exe').output.trim_space()
+					exe_path := os.readlink('/proc/$pid_s/exe') or { '' }
 					if exe_path.ends_with('/sh') ||
 					   exe_path.ends_with('/bash') ||
 					   exe_path.contains('curl') ||
@@ -289,8 +303,12 @@ fn despy() {
 					   exe_path.contains('/data/local/tmp') {
 
 						println('${term.red('☠')} [${ts}] CRITICAL: Baseband Exploit Detected! RIL spawned: ${exe_path}')
-						os.execute('kill -9 $pid_i')
-						os.execute('kill -9 $ppid')
+						safe_kill(pid_i, exe_path)
+						rild_exe := os.readlink('/proc/$ppid/exe') or { '' }
+						if rild_exe.len > 0 {
+							safe_kill(ppid, rild_exe)
+						}
+						
 						send_notification('BASEBAND ATTACK', 'RIL process killed due to exploit attempt.')
 					}
 				}
@@ -331,9 +349,8 @@ fn despy() {
 							}
 						}
 					}
-
-					exe_res := os.execute('readlink /proc/$pid_s/exe')
-					exe_path := exe_res.output.trim_space()
+					
+					exe_path := os.readlink('/proc/$pid_s/exe') or { '' }
 
 					if exe_path.len > 0 {
 						is_trusted := exe_path.starts_with('/system/') ||
@@ -346,14 +363,15 @@ fn despy() {
 									  exe_path.starts_with('/data/adb/') ||
 									  exe_path.starts_with('/debug_ramdisk/') ||
 									  exe_path.starts_with('/dev/') ||
-									  exe_path.starts_with('/data/data/com.termux/') // Exclude termux
+									  exe_path.starts_with('/data/data/com.termux/')
 
 						if _unlikely_(!is_trusted || (is_vulnerable && !exe_path.starts_with('/system/') && !exe_path.starts_with('/data/data/com.termux/'))) {
-							os.execute('kill -9 $pid_i')
-							reason := if is_vulnerable { 'Memory Integrity Violation' } else { 'Untrusted Root' }
-							msg := '${reason}: ${exe_path} (PID: ${pid_i})'
-							println('${term.red('✘')} [${ts}] ${msg}')
-							send_notification('Security Alert', msg)
+							if safe_kill(pid_i, exe_path) {
+								reason := if is_vulnerable { 'Memory Integrity Violation' } else { 'Untrusted Root' }
+								msg := '${reason}: ${exe_path} (PID: ${pid_i})'
+								println('${term.red('✘')} [${ts}] ${msg}')
+								send_notification('Security Alert', msg)
+							}
 						}
 					}
 				}
@@ -384,21 +402,21 @@ fn despy() {
 		if cam_active != last_cam_state {
 			if cam_active {
 				send_notification('Alert', 'Camera sensor active.')
-				println('${term.yellow('⚠')} [$ts] Camera active.')
+				println('${term.yellow('⚠')} [${ts}] Camera active.')
 			}
 			last_cam_state = cam_active
 		}
 		if mic_active != last_mic_state {
 			if mic_active {
 				send_notification('Alert', 'Microphone sensor active.')
-				println('${term.yellow('⚠')} [$ts] Microphone active.')
+				println('${term.yellow('⚠')} [${ts}] Microphone active.')
 			}
 			last_mic_state = mic_active
 		}
 		if gps_active != last_gps_state {
 			if gps_active {
 				send_notification('Alert', 'GPS hardware active.')
-				println('${term.yellow('⚠')} [$ts] GPS activity.')
+				println('${term.yellow('⚠')} [${ts}] GPS activity.')
 			}
 			last_gps_state = gps_active
 		}
