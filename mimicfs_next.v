@@ -1032,7 +1032,6 @@ fn purge_all() {
 			pkg_raw := target.all_after(prefix).replace('_', '.')
 
 			if _unlikely_(!is_valid_pkg(pkg_raw)) {
-				error2('Skipping invalid mount target: ${target}')
 				continue
 			}
 
@@ -1063,87 +1062,75 @@ fn purge_all() {
 		}
 	}
 
-	mut enc_files := []string{}
 	for pkg in packages {
-		f, ef := get_hashed_paths(pkg)
-		if os.exists(f) {
-			enc_files << f
-			path_res := os.execute('pm path ${pkg}')
-			if path_res.exit_code != 0 { continue }
-			
-			mut is_safe := true
-			mut apk_dirs := []string{}
+		path_res := os.execute('pm path ${pkg}')
+		if path_res.exit_code != 0 { continue }
+		
+		mut is_safe := true
+		mut apk_dirs := []string{}
 
-			for pline in path_res.output.trim_space().split_into_lines() {
-				apk_path := pline.trim_space().all_after('package:')
-				if apk_path.len == 0 { continue }
+		for pline in path_res.output.trim_space().split_into_lines() {
+			apk_path := pline.trim_space().all_after('package:')
+			if apk_path.len == 0 { continue }
 
-				if !apk_path.starts_with('/data/app/') {
-					is_safe = false
-					break
-				}
-
-				apk_dir := os.dir(apk_path)
-				if apk_dir.starts_with('/data/app/') && apk_dir.len > '/data/app/'.len {
-					if apk_dir !in apk_dirs {
-						apk_dirs << apk_dir
-					}
-				}
+			if !apk_path.starts_with('/data/app/') {
+				is_safe = false
+				break
 			}
 
-			if !is_safe || apk_dirs.len == 0 { continue }
-			
-			dump_res := os.execute('dumpsys package ${pkg}')
-			if dump_res.exit_code == 0 {
-				dump_out := dump_res.output
-				if dump_out.contains('SYSTEM') || dump_out.contains('flags=[ SYSTEM')
-					|| dump_out.contains('/system/') || dump_out.contains('/vendor/')
-					|| dump_out.contains('/product/') || dump_out.contains('/apex/') {
-					continue
+			apk_dir := os.dir(apk_path)
+			if apk_dir.starts_with('/data/app/') && apk_dir.len > '/data/app/'.len {
+				if apk_dir !in apk_dirs {
+					apk_dirs << apk_dir
 				}
-			}
-			
-			os.execute('am force-stop ${pkg}')
-			stat_res := os.execute('stat -c %u /data/data/${pkg}')
-			if stat_res.exit_code == 0 {
-				uid := stat_res.output.trim_space()
-				os.execute('pkill -9 -u ${uid}')
-			} else {
-				os.execute('killall -9 ${pkg}')
-			}
-			
-			os.execute('pm hide ${pkg}')
-			os.execute('pm disable ${pkg}')
-			
-			app_data_dirs := [
-				'/data/data/${pkg}',
-				'/data/user/0/${pkg}',
-				'/data/user_de/0/${pkg}',
-			]
-			for data_dir in app_data_dirs {
-				if os.exists(data_dir) && !os.is_link(data_dir) {
-					os.execute('find "${data_dir}" -type f -exec shred -n 1 -z -u {} +')
-					os.execute('rm -rf "${data_dir}"')
-				}
-			}
-			
-			for dir in apk_dirs {
-				os.execute('find "${dir}" -type f -exec shred -n 1 -z -u {} +')
-				os.execute('rm -rf "${dir}"')
 			}
 		}
-		if os.exists(ef) {
-			enc_files << ef
+
+		if !is_safe || apk_dirs.len == 0 { continue }
+		
+		dump_res := os.execute('dumpsys package ${pkg}')
+		if dump_res.exit_code == 0 {
+			dump_out := dump_res.output
+			if dump_out.contains('SYSTEM') || dump_out.contains('flags=[ SYSTEM')
+				|| dump_out.contains('/system/') || dump_out.contains('/vendor/')
+				|| dump_out.contains('/product/') || dump_out.contains('/apex/') {
+				continue
+			}
+		}
+		
+		os.execute('am force-stop ${pkg}')
+		stat_res := os.execute('stat -c %u /data/data/${pkg}')
+		if stat_res.exit_code == 0 {
+			uid := stat_res.output.trim_space()
+			os.execute('pkill -9 -u ${uid}')
+		} else {
+			os.execute('killall -9 ${pkg}')
+		}
+		
+		os.execute('pm hide ${pkg}')
+		os.execute('pm disable ${pkg}')
+		
+		app_data_dirs := [
+			'/data/data/${pkg}',
+			'/data/user/0/${pkg}',
+			'/data/user_de/0/${pkg}',
+		]
+		for data_dir in app_data_dirs {
+			if os.exists(data_dir) && !os.is_link(data_dir) {
+				os.execute('find "${data_dir}" -type f -exec shred -n 1 -z -u {} +')
+				os.execute('rm -rf "${data_dir}"')
+			}
+		}
+		
+		for dir in apk_dirs {
+			os.execute('find "${dir}" -type f -exec shred -n 1 -z -u {} +')
+			os.execute('rm -rf "${dir}"')
 		}
 	}
 	
+	os.execute('find /data/local/tmp -type f -exec shred -n 1 -z -u {} +')
+	os.execute('find /data/local/tmp -mindepth 1 -delete')
 	os.execute('fstrim /data')
-	
-	for f in enc_files {
-		if _likely_(os.exists(f) && !os.is_link(f)) {
-			os.execute('shred -n 1 -z -u "${f}"')
-		}
-	}
 
 	self := os.executable()
 	home_dir := os.getenv('HOME')
@@ -1158,9 +1145,8 @@ fn purge_all() {
 		parts << 'shred -n 1 -z -u "' + self + '"'
 	}
 
-	parts << 'find /data/local/tmp -mindepth 1 -type f -exec shred -n 1 -z -u {} +'
+	parts << 'find /data/local/tmp -type f -exec shred -n 1 -z -u {} +'
 	parts << 'find /data/local/tmp -mindepth 1 -delete'
-
 	parts << 'echo 3 > /proc/sys/vm/drop_caches'
 	parts << 'sync'
 	parts << 'fstrim /data'
