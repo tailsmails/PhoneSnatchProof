@@ -1013,9 +1013,6 @@ fn is_valid_pkg(s string) bool {
 }
 
 __global last_dialog_call = i64(0)
-__global app_secret_pepper = ''
-__global g_seed1 = ''
-__global g_seed2 = ''
 
 @[inline; must_use; _hot]
 fn get_input_dialog(title string, hint string, is_pw bool) string {
@@ -2074,6 +2071,7 @@ fn protect_termux_from_oom() int {
 	return count
 }
 
+__global app_secret_pepper = ''
 fn main() {
 	args := os.args[1..]
 	
@@ -2084,34 +2082,9 @@ fn main() {
 			if app_secret_pepper == '' {
 				fatal('Master Key cannot be empty')
 			}
-			g_seed1 = read_pw('Enter Seed 1: ')
-			if g_seed1 == '' {
-				fatal('Seed 1 cannot be empty')
-			}
-			g_seed2 = read_pw('Enter Seed 2: ')
-			if g_seed2 == '' {
-				fatal('Seed 2 cannot be empty')
-			}
-		} else { 
-			app_secret_pepper = '0' 
-			g_seed1 = '0'
-			g_seed2 = '0'
-		}
+		} else { app_secret_pepper = '0' }
 		cli_mode(args); return
-	} else { 
-		app_secret_pepper = read_pw('Enter App Master Key: ') 
-		if app_secret_pepper == '' {
-			fatal('Master Key cannot be empty')
-		}
-		g_seed1 = read_pw('Enter Seed 1: ')
-		if g_seed1 == '' {
-			fatal('Seed 1 cannot be empty')
-		}
-		g_seed2 = read_pw('Enter Seed 2: ')
-		if g_seed2 == '' {
-			fatal('Seed 2 cannot be empty')
-		}
-	}
+	} else { app_secret_pepper = read_pw('Enter App Master Key: ') }
 	
 	protect_termux_from_oom()
 	check_dp(true)
@@ -2443,6 +2416,11 @@ fn secure_random_bytes(size int) ![]u8 {
 		}
 		return error('Secure random bytes generation failed: ' + err.msg())
 	}
+}
+
+struct DecryptSpot {
+	rem   int
+	radix int
 }
 
 fn hex_char_to_val(c u8) u8 {
@@ -2790,8 +2768,8 @@ shred_orig bool, is_pq bool, use_compression bool) ! {
 	defer { outfile.close() }
 	
 	seed0_derived := pbkdf2_sha3_512(password.bytes(), 'mimicfs_seed0_salt'.bytes(), 5000, 32).hex()
-	seed1_derived := g_seed1
-	seed2_derived := g_seed2
+	seed1_derived := pbkdf2_sha3_512(password.bytes(), 'mimicfs_seed1_salt'.bytes(), 5000, 32).hex()
+	seed2_derived := pbkdf2_sha3_512(password.bytes(), 'mimicfs_seed2_salt'.bytes(), 5000, 32).hex()
 
 	file_salt := secure_random_bytes(32)!
 	outfile.write(file_salt)!
@@ -2993,8 +2971,8 @@ pbkdf2_iter int, shred_orig bool, use_compression bool) ! {
 	defer { outfile.close() }
 	
 	seed0_derived := pbkdf2_sha3_512(password.bytes(), 'mimicfs_seed0_salt'.bytes(), 5000, 32).hex()
-	seed1_derived := g_seed1
-	seed2_derived := g_seed2
+	seed1_derived := pbkdf2_sha3_512(password.bytes(), 'mimicfs_seed1_salt'.bytes(), 5000, 32).hex()
+	seed2_derived := pbkdf2_sha3_512(password.bytes(), 'mimicfs_seed2_salt'.bytes(), 5000, 32).hex()
 
 	println('[*] Reading binary file...')
 	mut file_salt := []u8{len: 32}
@@ -3355,7 +3333,6 @@ fn start_app_core(pkg string, pw string) int {
 			error2('Failed to mount External RAM disk. Aborting to protect privacy.')
 			run('umount -l ${safe_dp}')
 			run('umount -f ${safe_rp}')
-			run('umount -f ${safe_erp}')
 			run('rm -rf ${safe_rp} ${safe_erp}')
 			run('restorecon -R ${safe_dp}')
 			run('pm enable ${safe_pkg}')
