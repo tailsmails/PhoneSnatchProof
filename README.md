@@ -74,7 +74,7 @@ Log directories and tracing mechanisms are preemptively neutralized by mounting 
 | **Delay Function** | Memory-hard Sequential SHA-3-512 Post-Quantum VDF (16,384 Block Mixing Table) |
 | **Key wrapping KDF** | Argon2d (32MB Memory, 2 Iterations, 4 Threads) XOR-masked with VDF Output |
 | **VDF Metadata Protection** | Parameter structures XORed with Password-Salt SHA-3-512 keystream |
-| **Compression** | Zstd (Chunk-level) & Gzip (Tarball-level) |
+| **Compression** | Zstd (Chunk-level) ~~& Gzip (Tarball-level)~~ |
 | **Password Guard** | Offset-based Pointer Mapping over Shuffled Buffers |
 
 ---
