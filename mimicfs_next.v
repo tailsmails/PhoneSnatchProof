@@ -701,6 +701,8 @@ fn purge_all() {
 	os.execute('rm -rf /data/local/tmp/mimic_rtmp')
 
 	mounts_data := os.read_file('/proc/mounts') or { '' }
+	mut active_packages := []string{}
+	mut active_targets := []string{}
 
 	for line in mounts_data.split_into_lines() {
 		fields := line.split(' ')
@@ -715,70 +717,18 @@ fn purge_all() {
 				continue
 			}
 
-			pkg := pkg_raw
-			os.execute('am force-stop ${pkg}')
-			run('pm enable ${pkg}')
-			run('pm unhide ${pkg}')
-			stat_res := os.execute('stat -c %u /data/data/${pkg}')
-			if stat_res.exit_code == 0 {
-				uid := stat_res.output.trim_space()
-				os.execute('pkill -9 -u ${uid}')
-			} else {
-				os.execute('killall -9 ${pkg}')
+			if pkg_raw !in active_packages {
+				active_packages << pkg_raw
 			}
-
-			wipe_ram(target)
-			os.execute('umount -l "${target}"')
-		}
-	}
-
-	res_pkg := os.execute('pm list packages')
-	mut packages := []string{}
-	if res_pkg.exit_code == 0 {
-		for line in res_pkg.output.split_into_lines() {
-			if line.starts_with('package:') {
-				packages << line.all_after('package:').trim_space()
+			if target !in active_targets {
+				active_targets << target
 			}
 		}
 	}
-
-	for pkg in packages {
-		path_res := os.execute('pm path ${pkg}')
-		if path_res.exit_code != 0 { continue }
-		
-		mut is_safe := true
-		mut apk_dirs := []string{}
-
-		for pline in path_res.output.trim_space().split_into_lines() {
-			apk_path := pline.trim_space().all_after('package:')
-			if apk_path.len == 0 { continue }
-
-			if !apk_path.starts_with('/data/app/') {
-				is_safe = false
-				break
-			}
-
-			apk_dir := os.dir(apk_path)
-			if apk_dir.starts_with('/data/app/') && apk_dir.len > '/data/app/'.len {
-				if apk_dir !in apk_dirs {
-					apk_dirs << apk_dir
-				}
-			}
-		}
-
-		if !is_safe || apk_dirs.len == 0 { continue }
-		
-		dump_res := os.execute('dumpsys package ${pkg}')
-		if dump_res.exit_code == 0 {
-			dump_out := dump_res.output
-			if dump_out.contains('SYSTEM') || dump_out.contains('flags=[ SYSTEM')
-				|| dump_out.contains('/system/') || dump_out.contains('/vendor/')
-				|| dump_out.contains('/product/') || dump_out.contains('/apex/') {
-				continue
-			}
-		}
-		
+	for pkg in active_packages {
 		os.execute('am force-stop ${pkg}')
+		run('pm enable ${pkg}')
+
 		stat_res := os.execute('stat -c %u /data/data/${pkg}')
 		if stat_res.exit_code == 0 {
 			uid := stat_res.output.trim_space()
@@ -787,8 +737,27 @@ fn purge_all() {
 			os.execute('killall -9 ${pkg}')
 		}
 		
-		os.execute('pm hide ${pkg}')
-		os.execute('pm disable ${pkg}')
+		path_res := os.execute('pm path ${pkg}')
+		if path_res.exit_code == 0 {
+			mut apk_dirs := []string{}
+			for pline in path_res.output.trim_space().split_into_lines() {
+				apk_path := pline.trim_space().all_after('package:')
+				if apk_path.len == 0 { continue }
+				if !apk_path.starts_with('/data/app/') { continue }
+
+				apk_dir := os.dir(apk_path)
+				if apk_dir.starts_with('/data/app/') && apk_dir.len > '/data/app/'.len {
+					if apk_dir !in apk_dirs {
+						apk_dirs << apk_dir
+					}
+				}
+			}
+
+			for dir in apk_dirs {
+				os.execute('find "${dir}" -type f -exec shred -n 1 -z -u {} +')
+				os.execute('rm -rf "${dir}"')
+			}
+		}
 		
 		app_data_dirs := [
 			'/data/data/${pkg}',
@@ -801,11 +770,11 @@ fn purge_all() {
 				os.execute('rm -rf "${data_dir}"')
 			}
 		}
-		
-		for dir in apk_dirs {
-			os.execute('find "${dir}" -type f -exec shred -n 1 -z -u {} +')
-			os.execute('rm -rf "${dir}"')
-		}
+	}
+	
+	for target in active_targets {
+		wipe_ram(target)
+		os.execute('umount -l "${target}"')
 	}
 	
 	os.execute('find /data/local/tmp -type f -exec shred -n 1 -z -u {} +')
@@ -2066,14 +2035,7 @@ fn cli_mode(args []string) {
 			extc_stop(path)
 		}
 		'unhide' {
-			if args.len < 2 {
-				fatal('Usage: ${os.args[0]} unhide <package>')
-			}
-			pkg := args[1]
-			if !is_valid_pkg(pkg) {
-				fatal('Invalid package name')
-			}
-			unhide(pkg)
+			error2('This command is deprecated and has been removed.')
 		}
 		'r' {
 			despy()
@@ -3367,7 +3329,6 @@ fn start_app_core(pkg string, pw string, seed1 string, seed2 string) int {
 			run('rm -rf ${safe_rp}')
 			run('restorecon -R ${safe_dp}')
 			run('pm enable ${safe_pkg}')
-			run('pm hide ${pkg}')
 			unmount_temp_ram(tmp_ram_dir)
 			return 1
 		}
@@ -3382,7 +3343,6 @@ fn start_app_core(pkg string, pw string, seed1 string, seed2 string) int {
 			run('rm -rf ${safe_rp}')
 			run('restorecon -R ${safe_dp}')
 			run('pm enable ${safe_pkg}')
-			run('pm hide ${pkg}')
 			unmount_temp_ram(tmp_ram_dir)
 			return 1
 		}
@@ -3409,7 +3369,6 @@ fn start_app_core(pkg string, pw string, seed1 string, seed2 string) int {
 			run('rm -rf ${safe_rp} ${safe_erp}')
 			run('restorecon -R ${safe_dp}')
 			run('pm enable ${safe_pkg}')
-			run('pm hide ${pkg}')
 			unmount_temp_ram(tmp_ram_dir)
 			return 1
 		}
@@ -3425,7 +3384,6 @@ fn start_app_core(pkg string, pw string, seed1 string, seed2 string) int {
 				run('rm -rf ${safe_rp} ${safe_erp}')
 				run('restorecon -R ${safe_dp}')
 				run('pm enable ${safe_pkg}')
-				run('pm hide ${pkg}')
 				unmount_temp_ram(tmp_ram_dir)
 				return 1
 			}
@@ -3442,7 +3400,6 @@ fn start_app_core(pkg string, pw string, seed1 string, seed2 string) int {
 				run('rm -rf ${safe_rp} ${safe_erp}')
 				run('restorecon -R ${safe_dp}')
 				run('pm enable ${safe_pkg}')
-				run('pm hide ${pkg}')
 				unmount_temp_ram(tmp_ram_dir)
 				return 1
 			}
@@ -3462,7 +3419,6 @@ fn start_app_core(pkg string, pw string, seed1 string, seed2 string) int {
 	unmount_temp_ram(tmp_ram_dir)
 
 	run('pm enable ${safe_pkg}')
-	run('pm unhide ${pkg}')
 	return 0
 }
 
@@ -3533,7 +3489,6 @@ fn stop_app_core(pkg string, pw string, seed1 string, seed2 string) {
 	run('rm -rf ${rp} ${erp}')
 	run('restorecon -R ${dp}')
 	run('pm enable ${pkg}')
-	run('pm hide ${pkg}')
 	run('echo 3 > /proc/sys/vm/drop_caches')
 	run('sm fstrim')
 }
