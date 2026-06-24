@@ -31,7 +31,7 @@ pkg update -y && pkg install -y git clang make tar termux-api && if ! command -v
 ### 1. In-Memory Volatile Runtime (`mimicfs_next.v` Upgrades)
 Target applications run isolated from physical block storage. The directory `/data/data/<package_name>` is overlaid with a temporary memory filesystem (`tmpfs`).
 *   **Double-Layer Cryptography:** Rather than relying on a single cipher or external binaries, `mimicfs_next.v` performs encryption and decryption tasks in-memory using a native dual-layer **AES-CTR and ChaCha20-Poly1305** pipeline via native V modules (`x.crypto.chacha20`, `x.crypto.chacha20poly1305`, `crypto.aes`, `crypto.cipher`, `crypto.argon2`, and `crypto.sha3`). This combined cipher structure ensures cryptographic resistance against single-algorithm compromises.
-*   **Dual-Engine Compression:** Uses the native `compress.zstd` module to process volatile payload chunks directly in-memory, while maintaining `compress.gzip` to handle outer tarball structures.
+*   **Dual-Engine Compression:** Uses the native `compress.zstd` module to process volatile payload chunks directly in-memory, ~~while maintaining `compress.gzip` to handle outer tarball structures.~~
 *   **Data Lifecycle:** On startup, the encrypted container is decrypted and extracted into the allocated `tmpfs` space. Upon explicit termination, changes are compressed, encrypted, and synced back to persistent storage. Active RAM blocks are then neutralized via multi-pass random data writes before unmounting.
 
 ### 2. Post-Quantum VDF, Obfuscated Headers & Key Wrapping
