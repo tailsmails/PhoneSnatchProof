@@ -2075,8 +2075,9 @@ __global app_secret_pepper = ''
 fn main() {
 	args := os.args[1..]
 	
+	no_key_cmds := ['purge', 'forcestop', 'despy', 'r', 'list', 'unextc', 'deepclean', 'unhide']
 	if args.len > 0 {
-		if args[0] != 'purge' {
+		if args[0] !in no_key_cmds {
 			app_secret_pepper = read_pw('Enter App Master Key: ')
 			if app_secret_pepper == '' {
 				fatal('Master Key cannot be empty')
