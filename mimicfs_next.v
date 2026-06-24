@@ -850,15 +850,7 @@ fn purge_all() {
 
 @[inline; _cold]
 fn add_pkg_core(pkg string, pw string) {
-	f, _ := get_hashed_paths(pkg)
-
-	if _unlikely_(os.exists(f)) {
-		fatal('DOUBLE_ADD: Package file already exists at ${f}')
-	}
-
-	start_app_core(pkg, pw)
-	time.sleep(1000 * time.millisecond)
-	stop_app_core(pkg, pw)
+	error2("This feature is unsafe and has been removed. It will be permanently deleted in future releases.")
 }
 
 @[noinline; _cold]
@@ -967,9 +959,7 @@ fn C.execl(path &u8, arg0 &u8, ...) int
 
 @[inline; _cold]
 fn cpw_core(pkg string, pw string, new_pw string) {
-	start_app_core(pkg, pw)
-	time.sleep(1000 * time.millisecond)
-	stop_app_core(pkg, new_pw)
+	error2("This feature is unsafe and has been removed. It will be permanently deleted in future releases.")
 }
 
 @[inline; must_use; _hot]
