@@ -2488,6 +2488,29 @@ fn run_pq_calibration() u64 {
 	return u64(steps_per_ms)
 }
 
+fn serialize_vdf_params(n big.Integer, t u64, is_pq bool) []u8 {
+	mut b := []u8{}
+	n_bytes := n.str().bytes()
+	write_u16(mut b, u16(n_bytes.len))
+	write_u64(mut b, t)
+	b << u8(if is_pq { 1 } else { 0 })
+	for byte in n_bytes { b << byte }
+	return b
+}
+
+fn deserialize_vdf_params(b []u8) !VdfParams {
+	if b.len < 11 { return error('Malformed VDF params size') }
+	n_len := read_u16(b, 0)
+	t := read_u64(b, 2)
+	is_pq := b[10] == 1
+	if int(n_len) > b.len - 11 {
+		return error('Malformed VDF params boundaries')
+	}
+	n_str := b[11 .. 11 + int(n_len)].bytestr()
+	n := big.integer_from_string(n_str)!
+	return VdfParams{ n: n, t: t, is_pq: is_pq }
+}
+
 struct DecryptedHeader {
 	salt            []u8
 	iter            u32
@@ -2649,6 +2672,15 @@ struct VdfParams {
 	is_pq bool
 }
 
+fn write_u16(mut b []u8, val u16) {
+	b << u8(val >> 8)
+	b << u8(val)
+}
+
+fn read_u16(b []u8, offset int) u16 {
+	return (u16(b[offset]) << 8) | u16(b[offset + 1])
+}
+
 fn write_u32(mut b []u8, val u32) {
 	b << u8(val >> 24)
 	b << u8(val >> 16)
@@ -2734,10 +2766,15 @@ shred_orig bool, is_pq bool, use_compression bool) ! {
 	defer { infile.close() }
 	mut outfile := os.create(out_path)!
 	defer { outfile.close() }
+	
+	seed0_derived := pbkdf2_sha3_512(password.bytes(), 'mimicfs_seed0_salt'.bytes(), 5000, 32).hex()
+	seed1_derived := pbkdf2_sha3_512(password.bytes(), 'mimicfs_seed1_salt'.bytes(), 5000, 32).hex()
+	seed2_derived := pbkdf2_sha3_512(password.bytes(), 'mimicfs_seed2_salt'.bytes(), 5000, 32).hex()
 
 	file_salt := secure_random_bytes(32)!
 	outfile.write(file_salt)!
 
+	mut n_val := big.integer_from_int(0)
 	mut t_val := u64(0)
 	mut w_trapdoor_bytes := []u8{}
 	
@@ -2755,42 +2792,26 @@ shred_orig bool, is_pq bool, use_compression bool) ! {
 	lock_memory(mut w_trapdoor_bytes)
 	defer { unlock_memory(mut w_trapdoor_bytes); zeroize(mut w_trapdoor_bytes) }
 	
-	mut master_entropy_input := []u8{cap: password.len + file_salt.len + w_trapdoor_bytes.len}
-	for b in password.bytes() { master_entropy_input << b }
-	for b in file_salt { master_entropy_input << b }
-	for b in w_trapdoor_bytes { master_entropy_input << b }
-	master_entropy := sha3.sum512(master_entropy_input)
+	mut mask_input := []u8{cap: password.len + file_salt.len}
+	for b in password.bytes() { mask_input << b }
+	for b in file_salt { mask_input << b }
+	mask_stream := sha3.sum512(mask_input)
 	
-	mut seed0_input := []u8{cap: 64 + 5}
-	for b in master_entropy { seed0_input << b }
-	for b in "seed0".bytes() { seed0_input << b }
-	seed0_derived := sha3.sum512(seed0_input).hex()
+	vdf_params := serialize_vdf_params(n_val, t_val, true)
+	mut vdf_size_buf := []u8{}
+	write_u16(mut vdf_size_buf, u16(vdf_params.len))
 
-	mut seed1_input := []u8{cap: 64 + 5}
-	for b in master_entropy { seed1_input << b }
-	for b in "seed1".bytes() { seed1_input << b }
-	seed1_derived := sha3.sum512(seed1_input).hex()
+	mut masked_vdf_size := []u8{len: 2}
+	masked_vdf_size[0] = vdf_size_buf[0] ^ mask_stream[0]
+	masked_vdf_size[1] = vdf_size_buf[1] ^ mask_stream[1]
 
-	mut seed2_input := []u8{cap: 64 + 5}
-	for b in master_entropy { seed2_input << b }
-	for b in "seed2".bytes() { seed2_input << b }
-	seed2_derived := sha3.sum512(seed2_input).hex()
-	
-	vdf_key_iv := pbkdf2_sha3_512(password.bytes(), file_salt, 1000, 48)
-	vdf_key := vdf_key_iv[0..32].hex()
-	vdf_iv := vdf_key_iv[32..48].hex()
-
-	mut vdf_block := []u8{len: 32}
-	write_u64_to_buf(mut vdf_block, t_val, 0)
-	vdf_block[8] = 1 // is_pq = true
-	
-	vdf_padding := secure_random_bytes(23)!
-	for i in 0 .. 23 {
-		vdf_block[9 + i] = vdf_padding[i]
+	mut masked_vdf := []u8{len: vdf_params.len}
+	for i in 0 .. vdf_params.len {
+		masked_vdf[i] = vdf_params[i] ^ mask_stream[2 + (i % 62)]
 	}
 
-	encrypted_vdf := openssl_encrypt_header(vdf_block, vdf_key, vdf_iv)!
-	outfile.write(encrypted_vdf)!
+	outfile.write(masked_vdf_size)!
+	outfile.write(masked_vdf)!
 	
 	mut header_key_material := []u8{cap: password.len + w_trapdoor_bytes.len}
 	for b in password.bytes() { header_key_material << b }
@@ -2813,18 +2834,9 @@ shred_orig bool, is_pq bool, use_compression bool) ! {
 
 	mut seed_bytes2 := derive_seed2(seed2_derived, w_trapdoor_bytes, pbkdf2_iter)!
 	defer { unlock_memory(mut seed_bytes2); zeroize(mut seed_bytes2) }
-	
-	mut chunk_size_seed := []u8{cap: session_key.len + session_iv.len}
-	for b in session_key { chunk_size_seed << b }
-	for b in session_iv { chunk_size_seed << b }
-	chunk_size_hash := sha3.sum512(chunk_size_seed)
-	mut chunk_size_rng := SecurePRNG{seed: chunk_size_hash.clone()}
 
-	min_chunk := 256 * 1024   // 256 KB
-	max_chunk := 1536 * 1024  // 1.5 MB
-
-	first_chunk_target := chunk_size_rng.intn(max_chunk - min_chunk) + min_chunk
-	mut first_chunk_buf := []u8{len: first_chunk_target}
+	chunk_size := 1024 * 1024
+	mut first_chunk_buf := []u8{len: chunk_size}
 	n_read := infile.read(mut first_chunk_buf) or { 0 }
 	mut first_chunk_raw := []u8{}
 	if n_read > 0 { first_chunk_raw = first_chunk_buf[0..n_read].clone() }
@@ -2898,12 +2910,6 @@ shred_orig bool, is_pq bool, use_compression bool) ! {
 	}
 	for i in 0 .. first_chunk_cipher.len { mixed[remaining_indices[i]] = first_chunk_cipher[i] }
 
-	mut mask_input := []u8{cap: password.len + file_salt.len + w_trapdoor_bytes.len}
-	for b in password.bytes() { mask_input << b }
-	for b in file_salt { mask_input << b }
-	for b in w_trapdoor_bytes { mask_input << b }
-	mask_stream := sha3.sum512(mask_input)
-
 	mut mixed_size_buf := []u8{}
 	write_u32(mut mixed_size_buf, u32(mixed.len))
 
@@ -2916,9 +2922,8 @@ shred_orig bool, is_pq bool, use_compression bool) ! {
 	outfile.write(mixed)!
 
 	mut chunk_index := u64(1)
+	mut buf := []u8{len: chunk_size}
 	for {
-		chunk_target := chunk_size_rng.intn(max_chunk - min_chunk) + min_chunk
-		mut buf := []u8{len: chunk_target}
 		n_chunk := infile.read(mut buf) or { 0 }
 		if n_chunk <= 0 { break }
 		chunk_data := buf[0..n_chunk].clone()
@@ -2964,28 +2969,45 @@ pbkdf2_iter int, shred_orig bool, use_compression bool) ! {
 	defer { infile.close() }
 	mut outfile := os.create(out_path)!
 	defer { outfile.close() }
+	
+	seed0_derived := pbkdf2_sha3_512(password.bytes(), 'mimicfs_seed0_salt'.bytes(), 5000, 32).hex()
+	seed1_derived := pbkdf2_sha3_512(password.bytes(), 'mimicfs_seed1_salt'.bytes(), 5000, 32).hex()
+	seed2_derived := pbkdf2_sha3_512(password.bytes(), 'mimicfs_seed2_salt'.bytes(), 5000, 32).hex()
 
 	println('[*] Reading binary file...')
 	mut file_salt := []u8{len: 32}
 	n_salt := infile.read(mut file_salt)!
 	if n_salt < 32 { return error('File is too small to contain a valid salt!') }
 	
-	mut encrypted_vdf := []u8{len: 32}
-	n_vdf := infile.read(mut encrypted_vdf)!
-	if n_vdf < 32 { return error('Truncated VDF block.') }
+	mut mask_input := []u8{cap: password.len + file_salt.len}
+	for b in password.bytes() { mask_input << b }
+	for b in file_salt { mask_input << b }
+	mask_stream := sha3.sum512(mask_input)
 
-	vdf_key_iv := pbkdf2_sha3_512(password.bytes(), file_salt, 1000, 48)
-	vdf_key := vdf_key_iv[0..32].hex()
-	vdf_iv := vdf_key_iv[32..48].hex()
-
-	vdf_block := openssl_decrypt_header(encrypted_vdf, vdf_key, vdf_iv)!
+	mut masked_vdf_size := []u8{len: 2}
+	n_vdf_size := infile.read(mut masked_vdf_size)!
+	if n_vdf_size < 2 { return error('Malformed VDF params size.') }
 	
-	mut t_val := read_u64(vdf_block, 0)
-	if t_val > 100_000_000 {
-		t_val = 100_000_000
-	}
-	if t_val < 2 { t_val = 2 }
+	mut vdf_size_buf := []u8{len: 2}
+	vdf_size_buf[0] = masked_vdf_size[0] ^ mask_stream[0]
+	vdf_size_buf[1] = masked_vdf_size[1] ^ mask_stream[1]
+	vdf_len := read_u16(vdf_size_buf, 0)
 
+	mut masked_vdf := []u8{len: int(vdf_len)}
+	n_vdf := infile.read(mut masked_vdf)!
+	if n_vdf < int(vdf_len) { return error('Truncated VDF parameters.') }
+
+	mut vdf_bytes := []u8{len: int(vdf_len)}
+	for i in 0 .. int(vdf_len) {
+		vdf_bytes[i] = masked_vdf[i] ^ mask_stream[2 + (i % 62)]
+	}
+
+	vdf_p := deserialize_vdf_params(vdf_bytes) or {
+		return error('Failed to deserialize VDF parameters: ' + err.msg())
+	}
+
+	mut t_val := vdf_p.t
+	
 	mut x_bytes := []u8{}
 	println('[*] Resolving post-quantum SHA-3-512 VDF sequentially (t = ${t_val}). Please wait...')
 	start_time := time.now()
@@ -2999,33 +3021,6 @@ pbkdf2_iter int, shred_orig bool, use_compression bool) ! {
 	lock_memory(mut x_bytes)
 	defer { unlock_memory(mut x_bytes); zeroize(mut x_bytes) }
 	println('[+] Puzzle resolved in ${time.since(start_time).seconds():.2f} seconds.')
-	
-	mut master_entropy_input := []u8{cap: password.len + file_salt.len + x_bytes.len}
-	for b in password.bytes() { master_entropy_input << b }
-	for b in file_salt { master_entropy_input << b }
-	for b in x_bytes { master_entropy_input << b }
-	master_entropy := sha3.sum512(master_entropy_input)
-
-	mut seed0_input := []u8{cap: 64 + 5}
-	for b in master_entropy { seed0_input << b }
-	for b in "seed0".bytes() { seed0_input << b }
-	seed0_derived := sha3.sum512(seed0_input).hex()
-
-	mut seed1_input := []u8{cap: 64 + 5}
-	for b in master_entropy { seed1_input << b }
-	for b in "seed1".bytes() { seed1_input << b }
-	seed1_derived := sha3.sum512(seed1_input).hex()
-
-	mut seed2_input := []u8{cap: 64 + 5}
-	for b in master_entropy { seed2_input << b }
-	for b in "seed2".bytes() { seed2_input << b }
-	seed2_derived := sha3.sum512(seed2_input).hex()
-
-	mut mask_input := []u8{cap: password.len + file_salt.len + x_bytes.len}
-	for b in password.bytes() { mask_input << b }
-	for b in file_salt { mask_input << b }
-	for b in x_bytes { mask_input << b }
-	mask_stream := sha3.sum512(mask_input)
 	
 	mut masked_mixed_size := []u8{len: 4}
 	n_size := infile.read(mut masked_mixed_size)!
