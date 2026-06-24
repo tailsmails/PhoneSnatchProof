@@ -25,7 +25,6 @@ import crypto.sha3
 import crypto.rand as crand
 import x.crypto.chacha20
 import x.crypto.chacha20poly1305
-import compress.gzip
 import compress.zstd
 import crypto.aes
 import crypto.cipher
@@ -673,7 +672,11 @@ fn wipe_ram(path string) {
 fn mount_temp_ram() string {
 	tmp_ram_dir := '/data/local/tmp/mimic_rtmp'
 	run('mkdir -p ${tmp_ram_dir}')
-	run('mount -t tmpfs -o size=2G tmpfs ${tmp_ram_dir}')
+	
+	exit_code := os.system('mount -t tmpfs -o size=2G tmpfs ${tmp_ram_dir} 2>/dev/null')
+	if exit_code != 0 {
+		fatal('Failed to mount tmpfs on ${tmp_ram_dir}! Aborting to prevent flash storage leak.')
+	}
 	return tmp_ram_dir
 }
 
@@ -688,329 +691,6 @@ fn get_hashed_paths(pkg string) (string, string) {
 	h1 := pbkdf2_sha3_512(pkg.bytes(), pepper, 1000, 32).hex()
 	h2 := pbkdf2_sha3_512((pkg + '_ext').bytes(), pepper, 1000, 32).hex()
 	return '/data/local/tmp/' + h1, '/data/local/tmp/' + h2
-}
-
-@[noinline; direct_array_access; _cold]
-fn start_app_core(pkg string, pw string) int {
-	for b in pkg.bytes() {
-		if _unlikely_(!((b >= 97 && b <= 122) || (b >= 65 && b <= 90) || (b >= 48 && b <= 57) || b == 46 || b == 95)) {
-			return 1
-		}
-	}
-
-	kill_disk_swap()
-
-	if _unlikely_(!os.exists('/data/data/${pkg}')) {
-		return 1
-	}
-
-	u, c := get_meta('/data/data/${pkg}')
-	
-	safe_pkg := "'${pkg}'"
-	pid := pkg.replace('.', '_')
-	
-	dp := '/data/data/${pkg}'
-	safe_dp := "'${dp}'"
-	
-	rp := '/mnt/ram_${pid}'
-	safe_rp := "'${rp}'"
-	
-	vf, evf := get_hashed_paths(pkg)
-	safe_vf := "'${vf}'"
-	
-	pedp := '/data/media/0/Android/data/${pkg}'
-	safe_pedp := "'${pedp}'"
-	
-	vedp := '/storage/emulated/0/Android/data/${pkg}'
-	safe_vedp := "'${vedp}'"
-	
-	redp := '/mnt/runtime/write/emulated/0/Android/data/${pkg}'
-	safe_redp := "'${redp}'"
-	
-	erp := '/mnt/ext_${pid}'
-	safe_erp := "'${erp}'"
-	
-	safe_evf := "'${evf}'"
-
-	kill_app(pkg)
-	run('umount -l ${safe_dp}')
-	run('mkdir -p ${safe_rp}')
-
-	mut needed_storage := 1024
-	mut needed_data := 1024
-
-	if _likely_(os.exists(evf) && os.exists(vf)) {
-		res := os.execute('du -sm ${safe_evf} 2>/dev/null')
-		res_two := os.execute('du -sm ${safe_vf} 2>/dev/null')
-
-		if _likely_(res.exit_code == 0) {
-			parts := res.output.split('\t')
-			if parts.len > 0 {
-				val := parts[0].int()
-				if val > 0 {
-					needed_storage = val * 5
-				}
-			}
-		}
-
-		if _likely_(res_two.exit_code == 0) {
-			parts := res_two.output.split('\t')
-			if parts.len > 0 {
-				val := parts[0].int()
-				if val > 0 {
-					needed_data = val * 5
-				}
-			}
-		}
-	}
-
-	run('mount -t tmpfs -o size=${needed_data}M,mode=771 tmpfs ${safe_rp}')
-	tmp_ram_dir := mount_temp_ram()
-
-	if _likely_(os.exists(vf)) {
-		temp_gz := '${tmp_ram_dir}/${pkg}.tar.gz'
-		temp_tar := '${tmp_ram_dir}/${pkg}.tar'
-		
-		locktime_decrypt_flow(vf, temp_gz, pw, pbkdf2_iterations, false, false) or {
-			error2('DECRYPTION ERROR: ' + err.msg())
-			run('umount -f ${safe_rp}')
-			run('umount -f ${safe_erp}')
-			run('rm -rf ${safe_rp} ${safe_erp}')
-			run('restorecon -R ${safe_dp}')
-			run('pm enable ${safe_pkg}')
-			run('pm hide ${pkg}')
-			unmount_temp_ram(tmp_ram_dir)
-			return 1
-		}
-		
-		gz_bytes := os.read_bytes(temp_gz) or { []u8{} }
-		if gz_bytes.len > 0 {
-			tar_bytes := gzip.decompress(gz_bytes) or { []u8{} }
-			os.write_bytes(temp_tar, tar_bytes) or {}
-		}
-		secure_shred_file(temp_gz)
-		
-		cmd_main := 'tar -xp --numeric-owner -C ${safe_rp} < ${temp_tar}'
-		res := os.execute(cmd_main)
-		secure_shred_file(temp_tar)
-		
-		if _unlikely_(res.exit_code != 0) {
-			error2('TAR EXTRACTION FAILURE')
-			run('umount -f ${safe_rp}')
-			run('umount -f ${safe_erp}')
-			run('rm -rf ${safe_rp} ${safe_erp}')
-			run('restorecon -R ${safe_dp}')
-			run('pm enable ${safe_pkg}')
-			run('pm hide ${pkg}')
-			unmount_temp_ram(tmp_ram_dir)
-			return 1
-		}
-	} else {
-		run('cp -a ${safe_dp}/. ${safe_rp}/')
-	}
-
-	run('chown -R ${u}:${u} ${safe_rp}')
-	run('chcon -R ${c} ${safe_rp}')
-	run('mount --bind ${safe_rp} ${safe_dp}')
-
-	if os.exists(pedp) || os.exists(evf) {
-		run('umount -l ${safe_pedp}')
-		run('umount -l ${safe_vedp}')
-		run('umount -l ${safe_redp}')
-		run('mkdir -p ${safe_erp}')
-		run('mount -t tmpfs -o size=${needed_storage}M,mode=770,uid=${u},gid=9997 tmpfs ${safe_erp}')
-
-		if os.exists(evf) {
-			temp_ext_gz := '${tmp_ram_dir}/${pkg}.ext.tar.gz'
-			temp_ext_tar := '${tmp_ram_dir}/${pkg}.ext.tar'
-			
-			locktime_decrypt_flow(evf, temp_ext_gz, pw, pbkdf2_iterations, false, false) or {
-				error2('DECRYPTION ERROR: ' + err.msg())
-				run('umount -f ${safe_rp}')
-				run('umount -f ${safe_erp}')
-				run('rm -rf ${safe_rp} ${safe_erp}')
-				run('restorecon -R ${safe_dp}')
-				run('pm enable ${safe_pkg}')
-				run('pm hide ${pkg}')
-				unmount_temp_ram(tmp_ram_dir)
-				return 1
-			}
-
-			gz_bytes := os.read_bytes(temp_ext_gz) or { []u8{} }
-			if gz_bytes.len > 0 {
-				tar_bytes := gzip.decompress(gz_bytes) or { []u8{} }
-				os.write_bytes(temp_ext_tar, tar_bytes) or {}
-			}
-			secure_shred_file(temp_ext_gz)
-
-			cmd_ext := 'tar -xp --numeric-owner -C ${safe_erp} < ${temp_ext_tar}'
-			res := os.execute(cmd_ext)
-			secure_shred_file(temp_ext_tar)
-
-			if _unlikely_(res.exit_code != 0) {
-				error2('TAR EXT EXTRACTION FAILURE')
-				run('umount -f ${safe_rp}')
-				run('umount -f ${safe_erp}')
-				run('rm -rf ${safe_rp} ${safe_erp}')
-				run('restorecon -R ${safe_dp}')
-				run('pm enable ${safe_pkg}')
-				run('pm hide ${pkg}')
-				unmount_temp_ram(tmp_ram_dir)
-				return 1
-			}
-		} else {
-			run('cp -a ${safe_pedp}/. ${safe_erp}/')
-		}
-
-		run('chown -R ${u}:9997 ${safe_erp}')
-		run('chcon -R u:object_r:media_rw_data_file:s0 ${safe_erp}')
-		run('mount --bind ${safe_erp} ${safe_pedp}')
-		run('mount --bind ${safe_erp} ${safe_vedp}')
-		run('nsenter -t 1 -m mount --bind ${safe_erp} ${safe_pedp}')
-		run('nsenter -t 1 -m mount --bind ${safe_erp} ${safe_vedp}')
-		run('nsenter -t 1 -m mount --bind ${safe_erp} ${safe_redp}')
-	}
-	
-	unmount_temp_ram(tmp_ram_dir)
-
-	run('pm enable ${safe_pkg}')
-	run('pm unhide ${pkg}')
-	return 0
-}
-
-@[noinline; direct_array_access; _cold]
-fn stop_app_core(pkg string, pw string) {
-	pid := pkg.replace('.', '_')
-	dp := '/data/data/${pkg}'
-	rp := '/mnt/ram_${pid}'
-	erp := '/mnt/ext_${pid}'
-
-	mounts := os.execute('mount').output
-
-	if _likely_(mounts.contains(rp)) {
-		if _unlikely_(get_usage(rp) >= 95) {
-			println('Error: ${rp} usage is over 95%')
-			return
-		}
-	}
-
-	if _likely_(mounts.contains(erp)) {
-		if _unlikely_(get_usage(erp) >= 95) {
-			println('Error: ${erp} usage is over 95%')
-			return
-		}
-	}
-
-	run('am force-stop ${pkg}')
-	kill_app(pkg)
-
-	run('sync && echo 3 > /proc/sys/vm/drop_caches')
-	
-	tmp_ram_dir := mount_temp_ram()
-	out_file, out_ext_file := get_hashed_paths(pkg)
-
-	if _likely_(mounts.contains(rp)) {
-		temp_tar := '${tmp_ram_dir}/${pkg}.tar'
-		temp_gz := '${tmp_ram_dir}/${pkg}.tar.gz'
-		run('tar -cp --numeric-owner -C ${rp} . > ${temp_tar}')
-		tar_bytes := os.read_bytes(temp_tar) or { []u8{} }
-		if tar_bytes.len > 0 {
-			gz_bytes := gzip.compress(tar_bytes) or { []u8{} }
-			os.write_bytes(temp_gz, gz_bytes) or {}
-		}
-		secure_shred_file(temp_tar)
-		locktime_encrypt_flow(temp_gz, out_file, vdf_duration_sec, pw, argon_mem, argon_iter, argon_threads, 512, pbkdf2_iterations, true, vdf_is_pq, false) or {
-			error2('ENCRYPTION ERROR: ' + err.msg())
-		}
-	}
-	run('sync && echo 3 > /proc/sys/vm/drop_caches')
-	if _likely_(mounts.contains(erp)) {
-		temp_ext_tar := '${tmp_ram_dir}/${pkg}.ext.tar'
-		temp_ext_gz := '${tmp_ram_dir}/${pkg}.ext.tar.gz'
-		run('tar -cp --numeric-owner -C ${erp} . > ${temp_ext_tar}')
-		tar_bytes := os.read_bytes(temp_ext_tar) or { []u8{} }
-		if tar_bytes.len > 0 {
-			gz_bytes := gzip.compress(tar_bytes) or { []u8{} }
-			os.write_bytes(temp_ext_gz, gz_bytes) or {}
-		}
-		secure_shred_file(temp_ext_tar)
-		locktime_encrypt_flow(temp_ext_gz, out_ext_file, vdf_duration_sec, pw, argon_mem, argon_iter, argon_threads, 512, pbkdf2_iterations, true, vdf_is_pq, false) or {
-			error2('ENCRYPTION ERROR: ' + err.msg())
-		}
-	}
-	
-	unmount_temp_ram(tmp_ram_dir)
-
-	if _likely_(exists(rp)) {
-		wipe_ram(rp)
-	}
-	if _likely_(exists(erp)) {
-		wipe_ram(erp)
-	}
-	paths_to_unmount := [dp, '/data/media/0/Android/data/${pkg}',
-		'/storage/emulated/0/Android/data/${pkg}',
-		'/mnt/runtime/write/emulated/0/Android/data/${pkg}']
-	for path in paths_to_unmount {
-		run('umount -f ${path}')
-		run('nsenter -t 1 -m umount -f ${path}')
-	}
-	run('umount -f ${rp}')
-	run('umount -f ${erp}')
-	run('rm -rf ${rp} ${erp}')
-	run('restorecon -R ${dp}')
-	run('pm enable ${pkg}')
-	run('pm hide ${pkg}')
-	run('echo 3 > /proc/sys/vm/drop_caches')
-	run('sm fstrim')
-}
-
-@[noinline; _cold]
-fn stop_nokill_core(pkg string, pw string) {
-	pid := pkg.replace('.', '_')
-	rp := '/mnt/ram_${pid}'
-	erp := '/mnt/ext_${pid}'
-	mounts := os.execute('mount').output
-	
-	tmp_ram_dir := mount_temp_ram()
-	out_file, out_ext_file := get_hashed_paths(pkg)
-
-	if _likely_(mounts.contains(rp)) {
-		temp_tar := '${tmp_ram_dir}/${pkg}.tar'
-		temp_gz := '${tmp_ram_dir}/${pkg}.tar.gz'
-		run('tar -cp --numeric-owner -C ${rp} . > ${temp_tar}')
-		tar_bytes := os.read_bytes(temp_tar) or { []u8{} }
-		if tar_bytes.len > 0 {
-			gz_bytes := gzip.compress(tar_bytes) or { []u8{} }
-			os.write_bytes(temp_gz, gz_bytes) or {}
-		}
-		secure_shred_file(temp_tar)
-		locktime_encrypt_flow(temp_gz, out_file, vdf_duration_sec, pw, argon_mem, argon_iter, argon_threads, 512, pbkdf2_iterations, true, vdf_is_pq, false) or {
-			error2('ENCRYPTION ERROR: ' + err.msg())
-		}
-	}
-	if _likely_(mounts.contains(erp)) {
-		temp_ext_tar := '${tmp_ram_dir}/${pkg}.ext.tar'
-		temp_ext_gz := '${tmp_ram_dir}/${pkg}.ext.tar.gz'
-		run('tar -cp --numeric-owner -C ${erp} . > ${temp_ext_tar}')
-		tar_bytes := os.read_bytes(temp_ext_tar) or { []u8{} }
-		if tar_bytes.len > 0 {
-			gz_bytes := gzip.compress(tar_bytes) or { []u8{} }
-			os.write_bytes(temp_ext_gz, gz_bytes) or {}
-		}
-		secure_shred_file(temp_ext_tar)
-		locktime_encrypt_flow(temp_ext_gz, out_ext_file, vdf_duration_sec, pw, argon_mem, argon_iter, argon_threads, 512, pbkdf2_iterations, true, vdf_is_pq, false) or {
-			error2('ENCRYPTION ERROR: ' + err.msg())
-		}
-	}
-	
-	unmount_temp_ram(tmp_ram_dir)
-
-	if _likely_(exists(rp)) {
-		wipe_ram(rp)
-	}
-	if _likely_(exists(erp)) {
-		wipe_ram(erp)
-	}
 }
 
 @[noinline; noreturn; direct_array_access; _hot]
@@ -2073,24 +1753,6 @@ fn event(e &tui.Event, x voidptr) {
 				exit(0)
 			}
 			else {}
-		}
-	}
-}
-
-@[inline; _cold]
-fn check_dp(is_tui bool) {
-	if _unlikely_(os.execute('tar --help 2>/dev/null').exit_code != 0) {
-		fatal('There is no tar installed')
-	}
-	if _unlikely_(os.execute('shred --help 2>/dev/null').exit_code != 0) {
-		fatal('There is no shred installed')
-	}
-	if is_tui == true {
-		if _unlikely_(os.execute('which termux-dialog 2>/dev/null').exit_code != 0) {
-			fatal('There is no termux api installed OR you are in usermode')
-		}
-		if _unlikely_(os.execute('ls /data/data/com.termux.api 2>/dev/null').exit_code != 0) {
-			fatal('There is no termux api (apk file) installed')
 		}
 	}
 }
@@ -3515,5 +3177,324 @@ pbkdf2_iter int, shred_orig bool, use_compression bool) ! {
 	if shred_orig {
 		println('[*] Securely shredding encrypted carrier file: ${file_path} ...')
 		secure_shred_file(file_path)
+	}
+}
+
+@[inline; _cold]
+fn check_dp(is_tui bool) {
+	if _unlikely_(os.execute('tar --help 2>/dev/null').exit_code != 0) {
+		fatal('There is no tar installed')
+	}
+	if _unlikely_(os.execute('shred --help 2>/dev/null').exit_code != 0) {
+		fatal('There is no shred installed')
+	}
+	if _unlikely_(os.execute('which gzip 2>/dev/null').exit_code != 0) {
+		fatal('There is no gzip installed')
+	}
+	if is_tui == true {
+		if _unlikely_(os.execute('which termux-dialog 2>/dev/null').exit_code != 0) {
+			fatal('There is no termux api installed OR you are in usermode')
+		}
+		if _unlikely_(os.execute('ls /data/data/com.termux.api 2>/dev/null').exit_code != 0) {
+			fatal('There is no termux api (apk file) installed')
+		}
+	}
+}
+
+@[noinline; direct_array_access; _cold]
+fn start_app_core(pkg string, pw string) int {
+	for b in pkg.bytes() {
+		if _unlikely_(!((b >= 97 && b <= 122) || (b >= 65 && b <= 90) || (b >= 48 && b <= 57) || b == 46 || b == 95)) {
+			return 1
+		}
+	}
+
+	kill_disk_swap()
+
+	if _unlikely_(!os.exists('/data/data/${pkg}')) {
+		return 1
+	}
+
+	u, c := get_meta('/data/data/${pkg}')
+	
+	safe_pkg := "'${pkg}'"
+	pid := pkg.replace('.', '_')
+	
+	dp := '/data/data/${pkg}'
+	safe_dp := "'${dp}'"
+	
+	rp := '/mnt/ram_${pid}'
+	safe_rp := "'${rp}'"
+	
+	vf, evf := get_hashed_paths(pkg)
+	safe_vf := "'${vf}'"
+	
+	pedp := '/data/media/0/Android/data/${pkg}'
+	safe_pedp := "'${pedp}'"
+	
+	vedp := '/storage/emulated/0/Android/data/${pkg}'
+	safe_vedp := "'${vedp}'"
+	
+	redp := '/mnt/runtime/write/emulated/0/Android/data/${pkg}'
+	safe_redp := "'${redp}'"
+	
+	erp := '/mnt/ext_${pid}'
+	safe_erp := "'${erp}'"
+	
+	safe_evf := "'${evf}'"
+
+	kill_app(pkg)
+	run('umount -l ${safe_dp}')
+	run('mkdir -p ${safe_rp}')
+
+	mut needed_storage := 1024
+	mut needed_data := 1024
+	
+	if _likely_(os.exists(vf)) {
+		res_two := os.execute('du -sm ${safe_vf} 2>/dev/null')
+		if _likely_(res_two.exit_code == 0) {
+			parts := res_two.output.split('\t')
+			if parts.len > 0 {
+				val := parts[0].int()
+				if val > 0 {
+					needed_data = val * 5
+				}
+			}
+		}
+	}
+	
+	if _likely_(os.exists(evf)) {
+		res := os.execute('du -sm ${safe_evf} 2>/dev/null')
+		if _likely_(res.exit_code == 0) {
+			parts := res.output.split('\t')
+			if parts.len > 0 {
+				val := parts[0].int()
+				if val > 0 {
+					needed_storage = val * 5
+				}
+			}
+		}
+	}
+	
+	tmp_ram_dir := mount_temp_ram()
+	mount_res := os.system('mount -t tmpfs -o size=${needed_data}M,mode=771 tmpfs ${safe_rp} 2>/dev/null')
+	if mount_res != 0 {
+		error2('Failed to mount RAM disk for App Data. Aborting to protect privacy.')
+		unmount_temp_ram(tmp_ram_dir)
+		run('rm -rf ${safe_rp}')
+		return 1
+	}
+	
+	if _likely_(os.exists(vf)) {
+		temp_gz := '${tmp_ram_dir}/${pkg}.tar.gz'
+		
+		locktime_decrypt_flow(vf, temp_gz, pw, pbkdf2_iterations, false, false) or {
+			error2('DECRYPTION ERROR: ' + err.msg())
+			run('umount -f ${safe_rp}')
+			run('rm -rf ${safe_rp}')
+			run('restorecon -R ${safe_dp}')
+			run('pm enable ${safe_pkg}')
+			run('pm hide ${pkg}')
+			unmount_temp_ram(tmp_ram_dir)
+			return 1
+		}
+		
+		cmd_main := 'gzip -d -c "${temp_gz}" | tar -xp --numeric-owner -C ${safe_rp} -f -'
+		res := os.execute(cmd_main)
+		secure_shred_file(temp_gz)
+		
+		if _unlikely_(res.exit_code != 0) {
+			error2('TAR EXTRACTION FAILURE')
+			run('umount -f ${safe_rp}')
+			run('rm -rf ${safe_rp}')
+			run('restorecon -R ${safe_dp}')
+			run('pm enable ${safe_pkg}')
+			run('pm hide ${pkg}')
+			unmount_temp_ram(tmp_ram_dir)
+			return 1
+		}
+	} else {
+		run('cp -a ${safe_dp}/. ${safe_rp}/')
+	}
+
+	run('chown -R ${u}:${u} ${safe_rp}')
+	run('chcon -R ${c} ${safe_rp}')
+	run('mount --bind ${safe_rp} ${safe_dp}')
+	
+	if os.exists(pedp) || os.exists(evf) {
+		run('umount -l ${safe_pedp}')
+		run('umount -l ${safe_vedp}')
+		run('umount -l ${safe_redp}')
+		run('mkdir -p ${safe_erp}')
+		
+		ext_mount_res := os.system('mount -t tmpfs -o size=${needed_storage}M,mode=770,uid=${u},gid=9997 tmpfs ${safe_erp} 2>/dev/null')
+		if ext_mount_res != 0 {
+			error2('Failed to mount External RAM disk. Aborting to protect privacy.')
+			run('umount -l ${safe_dp}')
+			run('umount -f ${safe_rp}')
+			run('rm -rf ${safe_rp} ${safe_erp}')
+			run('restorecon -R ${safe_dp}')
+			run('pm enable ${safe_pkg}')
+			run('pm hide ${pkg}')
+			unmount_temp_ram(tmp_ram_dir)
+			return 1
+		}
+		
+		if os.exists(evf) {
+			temp_ext_gz := '${tmp_ram_dir}/${pkg}.ext.tar.gz'
+			
+			locktime_decrypt_flow(evf, temp_ext_gz, pw, pbkdf2_iterations, false, false) or {
+				error2('DECRYPTION ERROR: ' + err.msg())
+				run('umount -l ${safe_dp}')
+				run('umount -f ${safe_rp}')
+				run('umount -f ${safe_erp}')
+				run('rm -rf ${safe_rp} ${safe_erp}')
+				run('restorecon -R ${safe_dp}')
+				run('pm enable ${safe_pkg}')
+				run('pm hide ${pkg}')
+				unmount_temp_ram(tmp_ram_dir)
+				return 1
+			}
+			
+			cmd_ext := 'gzip -d -c "${temp_ext_gz}" | tar -xp --numeric-owner -C ${safe_erp} -f -'
+			res := os.execute(cmd_ext)
+			secure_shred_file(temp_ext_gz)
+
+			if _unlikely_(res.exit_code != 0) {
+				error2('TAR EXT EXTRACTION FAILURE')
+				run('umount -l ${safe_dp}')
+				run('umount -f ${safe_rp}')
+				run('umount -f ${safe_erp}')
+				run('rm -rf ${safe_rp} ${safe_erp}')
+				run('restorecon -R ${safe_dp}')
+				run('pm enable ${safe_pkg}')
+				run('pm hide ${pkg}')
+				unmount_temp_ram(tmp_ram_dir)
+				return 1
+			}
+		} else {
+			run('cp -a ${safe_pedp}/. ${safe_erp}/')
+		}
+
+		run('chown -R ${u}:9997 ${safe_erp}')
+		run('chcon -R u:object_r:media_rw_data_file:s0 ${safe_erp}')
+		run('mount --bind ${safe_erp} ${safe_pedp}')
+		run('mount --bind ${safe_erp} ${safe_vedp}')
+		run('nsenter -t 1 -m mount --bind ${safe_erp} ${safe_pedp}')
+		run('nsenter -t 1 -m mount --bind ${safe_erp} ${safe_vedp}')
+		run('nsenter -t 1 -m mount --bind ${safe_erp} ${safe_redp}')
+	}
+	
+	unmount_temp_ram(tmp_ram_dir)
+
+	run('pm enable ${safe_pkg}')
+	run('pm unhide ${pkg}')
+	return 0
+}
+
+@[noinline; direct_array_access; _cold]
+fn stop_app_core(pkg string, pw string) {
+	pid := pkg.replace('.', '_')
+	dp := '/data/data/${pkg}'
+	rp := '/mnt/ram_${pid}'
+	erp := '/mnt/ext_${pid}'
+
+	mounts := os.execute('mount').output
+
+	if _likely_(mounts.contains(rp)) {
+		if _unlikely_(get_usage(rp) >= 95) {
+			println('Error: ${rp} usage is over 95%')
+			return
+		}
+	}
+
+	if _likely_(mounts.contains(erp)) {
+		if _unlikely_(get_usage(erp) >= 95) {
+			println('Error: ${erp} usage is over 95%')
+			return
+		}
+	}
+
+	run('am force-stop ${pkg}')
+	kill_app(pkg)
+
+	run('sync && echo 3 > /proc/sys/vm/drop_caches')
+	
+	tmp_ram_dir := mount_temp_ram()
+	out_file, out_ext_file := get_hashed_paths(pkg)
+
+	if _likely_(mounts.contains(rp)) {
+		temp_gz := '${tmp_ram_dir}/${pkg}.tar.gz'
+		run('tar -cp --numeric-owner -C ${rp} -f - . | gzip -c > "${temp_gz}"')
+		locktime_encrypt_flow(temp_gz, out_file, vdf_duration_sec, pw, argon_mem, argon_iter, argon_threads, 512, pbkdf2_iterations, true, vdf_is_pq, false) or {
+			error2('ENCRYPTION ERROR: ' + err.msg())
+		}
+	}
+	run('sync && echo 3 > /proc/sys/vm/drop_caches')
+	if _likely_(mounts.contains(erp)) {
+		temp_ext_gz := '${tmp_ram_dir}/${pkg}.ext.tar.gz'
+		run('tar -cp --numeric-owner -C ${erp} -f - . | gzip -c > "${temp_ext_gz}"')
+		locktime_encrypt_flow(temp_ext_gz, out_ext_file, vdf_duration_sec, pw, argon_mem, argon_iter, argon_threads, 512, pbkdf2_iterations, true, vdf_is_pq, false) or {
+			error2('ENCRYPTION ERROR: ' + err.msg())
+		}
+	}
+	
+	unmount_temp_ram(tmp_ram_dir)
+
+	if _likely_(exists(rp)) {
+		wipe_ram(rp)
+	}
+	if _likely_(exists(erp)) {
+		wipe_ram(erp)
+	}
+	paths_to_unmount := [dp, '/data/media/0/Android/data/${pkg}',
+		'/storage/emulated/0/Android/data/${pkg}',
+		'/mnt/runtime/write/emulated/0/Android/data/${pkg}']
+	for path in paths_to_unmount {
+		run('umount -f ${path}')
+		run('nsenter -t 1 -m umount -f ${path}')
+	}
+	run('umount -f ${rp}')
+	run('umount -f ${erp}')
+	run('rm -rf ${rp} ${erp}')
+	run('restorecon -R ${dp}')
+	run('pm enable ${pkg}')
+	run('pm hide ${pkg}')
+	run('echo 3 > /proc/sys/vm/drop_caches')
+	run('sm fstrim')
+}
+
+@[noinline; _cold]
+fn stop_nokill_core(pkg string, pw string) {
+	pid := pkg.replace('.', '_')
+	rp := '/mnt/ram_${pid}'
+	erp := '/mnt/ext_${pid}'
+	mounts := os.execute('mount').output
+	
+	tmp_ram_dir := mount_temp_ram()
+	out_file, out_ext_file := get_hashed_paths(pkg)
+
+	if _likely_(mounts.contains(rp)) {
+		temp_gz := '${tmp_ram_dir}/${pkg}.tar.gz'
+		run('tar -cp --numeric-owner -C ${rp} -f - . | gzip -c > "${temp_gz}"')
+		locktime_encrypt_flow(temp_gz, out_file, vdf_duration_sec, pw, argon_mem, argon_iter, argon_threads, 512, pbkdf2_iterations, true, vdf_is_pq, false) or {
+			error2('ENCRYPTION ERROR: ' + err.msg())
+		}
+	}
+	if _likely_(mounts.contains(erp)) {
+		temp_ext_gz := '${tmp_ram_dir}/${pkg}.ext.tar.gz'
+		run('tar -cp --numeric-owner -C ${erp} -f - . | gzip -c > "${temp_ext_gz}"')
+		locktime_encrypt_flow(temp_ext_gz, out_ext_file, vdf_duration_sec, pw, argon_mem, argon_iter, argon_threads, 512, pbkdf2_iterations, true, vdf_is_pq, false) or {
+			error2('ENCRYPTION ERROR: ' + err.msg())
+		}
+	}
+	
+	unmount_temp_ram(tmp_ram_dir)
+
+	if _likely_(exists(rp)) {
+		wipe_ram(rp)
+	}
+	if _likely_(exists(erp)) {
+		wipe_ram(erp)
 	}
 }
