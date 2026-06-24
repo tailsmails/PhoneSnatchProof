@@ -850,6 +850,8 @@ fn purge_all() {
 
 @[inline; _cold]
 fn add_pkg_core(pkg string, pw string) {
+	_ := pkg
+	_ := pw
 	error2("This feature is unsafe and has been removed. It will be permanently deleted in future releases.")
 }
 
@@ -959,6 +961,9 @@ fn C.execl(path &u8, arg0 &u8, ...) int
 
 @[inline; _cold]
 fn cpw_core(pkg string, pw string, new_pw string) {
+	_ := pkg
+	_ := pw
+	_ := new_pw
 	error2("This feature is unsafe and has been removed. It will be permanently deleted in future releases.")
 }
 
@@ -1608,8 +1613,14 @@ fn event(e &tui.Event, x voidptr) {
 							return
 						}
 						seed1 := get_input_dialog('Enter Seed 1', 'Seed 1', true)
+						seed1_conf := get_input_dialog('Verify Seed 1', 'Seed 1 Again', true)
+						if seed1 == '' || seed1 != seed1_conf {
+							back_to_termux()
+							return
+						}
 						seed2 := get_input_dialog('Enter Seed 2', 'Seed 2', true)
-						if seed1 == '' || seed2 == '' {
+						seed2_conf := get_input_dialog('Verify Seed 2', 'Seed 2 Again', true)
+						if seed2 == '' || seed2 != seed2_conf {
 							back_to_termux()
 							return
 						}
@@ -1672,8 +1683,14 @@ fn event(e &tui.Event, x voidptr) {
 							return
 						}
 						seed1 := get_input_dialog('Enter Seed 1', 'Seed 1', true)
+						seed1_conf := get_input_dialog('Verify Seed 1', 'Seed 1 Again', true)
+						if seed1 == '' || seed1 != seed1_conf {
+							back_to_termux()
+							return
+						}
 						seed2 := get_input_dialog('Enter Seed 2', 'Seed 2', true)
-						if seed1 == '' || seed2 == '' {
+						seed2_conf := get_input_dialog('Verify Seed 2', 'Seed 2 Again', true)
+						if seed2 == '' || seed2 != seed2_conf {
 							back_to_termux()
 							return
 						}
@@ -1743,8 +1760,14 @@ fn event(e &tui.Event, x voidptr) {
 							return
 						}
 						seed1 := get_input_dialog('Verify Seed 1', 'Seed 1', true)
+						seed1_conf := get_input_dialog('Verify Seed 1 Again', 'Seed 1 Again', true)
+						if seed1 == '' || seed1 != seed1_conf {
+							back_to_termux()
+							return
+						}
 						seed2 := get_input_dialog('Verify Seed 2', 'Seed 2', true)
-						if seed1 == '' || seed2 == '' {
+						seed2_conf := get_input_dialog('Verify Seed 2 Again', 'Seed 2 Again', true)
+						if seed2 == '' || seed2 != seed2_conf {
 							back_to_termux()
 							return
 						}
@@ -1877,9 +1900,14 @@ fn cli_mode(args []string) {
 				fatal('Passwords do not match')
 			}
 			seed1 := read_pw('Seed 1: ')
+			seed1_conf := read_pw('Seed 1 Again: ')
+			if seed1 == '' || seed1 != seed1_conf {
+				fatal('Seed 1 mismatch or empty')
+			}
 			seed2 := read_pw('Seed 2: ')
-			if seed1 == '' || seed2 == '' {
-				fatal('Seeds cannot be empty')
+			seed2_conf := read_pw('Seed 2 Again: ')
+			if seed2 == '' || seed2 != seed2_conf {
+				fatal('Seed 2 mismatch or empty')
 			}
 			stop_app_core(pkg, pw, seed1, seed2)
 		}
@@ -1910,9 +1938,14 @@ fn cli_mode(args []string) {
 				fatal('Passwords do not match')
 			}
 			seed1 := read_pw('Seed 1: ')
+			seed1_conf := read_pw('Seed 1 Again: ')
+			if seed1 == '' || seed1 != seed1_conf {
+				fatal('Seed 1 mismatch or empty')
+			}
 			seed2 := read_pw('Seed 2: ')
-			if seed1 == '' || seed2 == '' {
-				fatal('Seeds cannot be empty')
+			seed2_conf := read_pw('Seed 2 Again: ')
+			if seed2 == '' || seed2 != seed2_conf {
+				fatal('Seed 2 mismatch or empty')
 			}
 			stop_nokill_core(pkg, pw, seed1, seed2)
 		}
@@ -1964,9 +1997,14 @@ fn cli_mode(args []string) {
 				fatal('Passwords do not match')
 			}
 			seed1 := read_pw('Seed 1: ')
+			seed1_conf := read_pw('Seed 1 Again: ')
+			if seed1 == '' || seed1 != seed1_conf {
+				fatal('Seed 1 mismatch or empty')
+			}
 			seed2 := read_pw('Seed 2: ')
-			if seed1 == '' || seed2 == '' {
-				fatal('Seeds cannot be empty')
+			seed2_conf := read_pw('Seed 2 Again: ')
+			if seed2 == '' || seed2 != seed2_conf {
+				fatal('Seed 2 mismatch or empty')
 			}
 			lock_all_core(pw, seed1, seed2)
 		}
