@@ -1180,14 +1180,14 @@ fn resize_app_tmpfs(pkg string, delta_mb int, ext bool) int {
 }
 
 @[inline; _cold]
-fn lock_all_core(pw string) {
+fn lock_all_core(pw string, seed1 string, seed2 string) {
 	mounts := os.read_file('/proc/mounts') or { return }
 	for line in mounts.split('\n') {
 		fields := line.split(' ')
 		if fields.len >= 2 && fields[1].starts_with('/mnt/ram_') {
 			pid := fields[1].replace('/mnt/ram_', '')
 			pkg := pid.replace('_', '.')
-			stop_app_core(pkg, pw)
+			stop_app_core(pkg, pw, seed1, seed2)
 		}
 	}
 }
@@ -1586,8 +1586,14 @@ fn event(e &tui.Event, x voidptr) {
 							back_to_termux()
 							return
 						}
+						seed1 := get_input_dialog('Enter Seed 1', 'Seed 1', true)
+						seed2 := get_input_dialog('Enter Seed 2', 'Seed 2', true)
+						if seed1 == '' || seed2 == '' {
+							back_to_termux()
+							return
+						}
 						back_to_termux()
-						start_app_core(pkg, pw)
+						start_app_core(pkg, pw, seed1, seed2)
 					}
 					2 {
 						pkg := get_input_dialog('Stop App', 'Package Name', false)
@@ -1601,8 +1607,14 @@ fn event(e &tui.Event, x voidptr) {
 							back_to_termux()
 							return
 						}
+						seed1 := get_input_dialog('Enter Seed 1', 'Seed 1', true)
+						seed2 := get_input_dialog('Enter Seed 2', 'Seed 2', true)
+						if seed1 == '' || seed2 == '' {
+							back_to_termux()
+							return
+						}
 						back_to_termux()
-						stop_app_core(pkg, pw)
+						stop_app_core(pkg, pw, seed1, seed2)
 					}
 					3 {
 						list_core()
@@ -1659,8 +1671,14 @@ fn event(e &tui.Event, x voidptr) {
 							back_to_termux()
 							return
 						}
+						seed1 := get_input_dialog('Enter Seed 1', 'Seed 1', true)
+						seed2 := get_input_dialog('Enter Seed 2', 'Seed 2', true)
+						if seed1 == '' || seed2 == '' {
+							back_to_termux()
+							return
+						}
 						back_to_termux()
-						stop_nokill_core(pkg, pw)
+						stop_nokill_core(pkg, pw, seed1, seed2)
 					}
 					8 { exit(0) }
 					9 {
@@ -1724,8 +1742,14 @@ fn event(e &tui.Event, x voidptr) {
 							back_to_termux()
 							return
 						}
+						seed1 := get_input_dialog('Verify Seed 1', 'Seed 1', true)
+						seed2 := get_input_dialog('Verify Seed 2', 'Seed 2', true)
+						if seed1 == '' || seed2 == '' {
+							back_to_termux()
+							return
+						}
 						back_to_termux()
-						lock_all_core(pw)
+						lock_all_core(pw, seed1, seed2)
 					}
 					15 {
 						pkg := get_input_dialog('Unhide An App', 'Package Name', false)
@@ -1829,7 +1853,12 @@ fn cli_mode(args []string) {
 			if pw == '' {
 				fatal('Empty password')
 			}
-			exit(start_app_core(pkg, pw))
+			seed1 := read_pw('Seed 1: ')
+			seed2 := read_pw('Seed 2: ')
+			if seed1 == '' || seed2 == '' {
+				fatal('Seeds cannot be empty')
+			}
+			exit(start_app_core(pkg, pw, seed1, seed2))
 		}
 		'stop' {
 			if args.len < 2 {
@@ -1847,7 +1876,12 @@ fn cli_mode(args []string) {
 			if pw != pw2 {
 				fatal('Passwords do not match')
 			}
-			stop_app_core(pkg, pw)
+			seed1 := read_pw('Seed 1: ')
+			seed2 := read_pw('Seed 2: ')
+			if seed1 == '' || seed2 == '' {
+				fatal('Seeds cannot be empty')
+			}
+			stop_app_core(pkg, pw, seed1, seed2)
 		}
 		'forcestop' {
 			if args.len < 2 {
@@ -1875,7 +1909,12 @@ fn cli_mode(args []string) {
 			if pw != pw2 {
 				fatal('Passwords do not match')
 			}
-			stop_nokill_core(pkg, pw)
+			seed1 := read_pw('Seed 1: ')
+			seed2 := read_pw('Seed 2: ')
+			if seed1 == '' || seed2 == '' {
+				fatal('Seeds cannot be empty')
+			}
+			stop_nokill_core(pkg, pw, seed1, seed2)
 		}
 		'remove' {
 			if args.len < 2 {
@@ -1924,7 +1963,12 @@ fn cli_mode(args []string) {
 			if pw != pw2 {
 				fatal('Passwords do not match')
 			}
-			lock_all_core(pw)
+			seed1 := read_pw('Seed 1: ')
+			seed2 := read_pw('Seed 2: ')
+			if seed1 == '' || seed2 == '' {
+				fatal('Seeds cannot be empty')
+			}
+			lock_all_core(pw, seed1, seed2)
 		}
 		'resize' {
 			if args.len < 2 {
@@ -2745,7 +2789,7 @@ fn secure_shred_file(path string) {
 }
 
 fn locktime_encrypt_flow(file_path string, out_path string, duration_sec u64,
-password string, mem u32, iter u32, threads u8, prime_bits int, pbkdf2_iter int, 
+password string, seed1 string, seed2 string, mem u32, iter u32, threads u8, prime_bits int, pbkdf2_iter int, 
 shred_orig bool, is_pq bool, use_compression bool) ! { 
 	_ = prime_bits
 	_ = is_pq
@@ -2758,8 +2802,8 @@ shred_orig bool, is_pq bool, use_compression bool) ! {
 	defer { outfile.close() }
 	
 	seed0_derived := pbkdf2_sha3_512(password.bytes(), 'mimicfs_seed0_salt'.bytes(), 5000, 32).hex()
-	seed1_derived := pbkdf2_sha3_512(password.bytes(), 'mimicfs_seed1_salt'.bytes(), 5000, 32).hex()
-	seed2_derived := pbkdf2_sha3_512(password.bytes(), 'mimicfs_seed2_salt'.bytes(), 5000, 32).hex()
+	seed1_derived := seed1
+	seed2_derived := seed2
 
 	file_salt := secure_random_bytes(32)!
 	outfile.write(file_salt)!
@@ -2948,7 +2992,7 @@ shred_orig bool, is_pq bool, use_compression bool) ! {
 	}
 }
 
-fn locktime_decrypt_flow(file_path string, out_path string, password string,
+fn locktime_decrypt_flow(file_path string, out_path string, password string, seed1 string, seed2 string,
 pbkdf2_iter int, shred_orig bool, use_compression bool) ! { 
 	_ = use_compression
 	
@@ -2961,8 +3005,8 @@ pbkdf2_iter int, shred_orig bool, use_compression bool) ! {
 	defer { outfile.close() }
 	
 	seed0_derived := pbkdf2_sha3_512(password.bytes(), 'mimicfs_seed0_salt'.bytes(), 5000, 32).hex()
-	seed1_derived := pbkdf2_sha3_512(password.bytes(), 'mimicfs_seed1_salt'.bytes(), 5000, 32).hex()
-	seed2_derived := pbkdf2_sha3_512(password.bytes(), 'mimicfs_seed2_salt'.bytes(), 5000, 32).hex()
+	seed1_derived := seed1
+	seed2_derived := seed2
 
 	println('[*] Reading binary file...')
 	mut file_salt := []u8{len: 32}
@@ -3193,7 +3237,7 @@ fn check_dp(is_tui bool) {
 }
 
 @[noinline; direct_array_access; _cold]
-fn start_app_core(pkg string, pw string) int {
+fn start_app_core(pkg string, pw string, seed1 string, seed2 string) int {
 	for b in pkg.bytes() {
 		if _unlikely_(!((b >= 97 && b <= 122) || (b >= 65 && b <= 90) || (b >= 48 && b <= 57) || b == 46 || b == 95)) {
 			return 1
@@ -3279,7 +3323,7 @@ fn start_app_core(pkg string, pw string) int {
 	if _likely_(os.exists(vf)) {
 		temp_gz := '${tmp_ram_dir}/${pkg}.tar.gz'
 		
-		locktime_decrypt_flow(vf, temp_gz, pw, pbkdf2_iterations, false, false) or {
+		locktime_decrypt_flow(vf, temp_gz, pw, seed1, seed2, pbkdf2_iterations, false, false) or {
 			error2('DECRYPTION ERROR: ' + err.msg())
 			run('umount -f ${safe_rp}')
 			run('rm -rf ${safe_rp}')
@@ -3323,6 +3367,7 @@ fn start_app_core(pkg string, pw string) int {
 			error2('Failed to mount External RAM disk. Aborting to protect privacy.')
 			run('umount -l ${safe_dp}')
 			run('umount -f ${safe_rp}')
+			run('umount -f ${safe_erp}')
 			run('rm -rf ${safe_rp} ${safe_erp}')
 			run('restorecon -R ${safe_dp}')
 			run('pm enable ${safe_pkg}')
@@ -3334,7 +3379,7 @@ fn start_app_core(pkg string, pw string) int {
 		if os.exists(evf) {
 			temp_ext_gz := '${tmp_ram_dir}/${pkg}.ext.tar.gz'
 			
-			locktime_decrypt_flow(evf, temp_ext_gz, pw, pbkdf2_iterations, false, false) or {
+			locktime_decrypt_flow(evf, temp_ext_gz, pw, seed1, seed2, pbkdf2_iterations, false, false) or {
 				error2('DECRYPTION ERROR: ' + err.msg())
 				run('umount -l ${safe_dp}')
 				run('umount -f ${safe_rp}')
@@ -3384,7 +3429,7 @@ fn start_app_core(pkg string, pw string) int {
 }
 
 @[noinline; direct_array_access; _cold]
-fn stop_app_core(pkg string, pw string) {
+fn stop_app_core(pkg string, pw string, seed1 string, seed2 string) {
 	pid := pkg.replace('.', '_')
 	dp := '/data/data/${pkg}'
 	rp := '/mnt/ram_${pid}'
@@ -3417,7 +3462,7 @@ fn stop_app_core(pkg string, pw string) {
 	if _likely_(mounts.contains(rp)) {
 		temp_gz := '${tmp_ram_dir}/${pkg}.tar.gz'
 		run('tar -cp --numeric-owner -C ${rp} -f - . | gzip -c > "${temp_gz}"')
-		locktime_encrypt_flow(temp_gz, out_file, vdf_duration_sec, pw, argon_mem, argon_iter, argon_threads, 512, pbkdf2_iterations, true, vdf_is_pq, false) or {
+		locktime_encrypt_flow(temp_gz, out_file, vdf_duration_sec, pw, seed1, seed2, argon_mem, argon_iter, argon_threads, 512, pbkdf2_iterations, true, vdf_is_pq, false) or {
 			error2('ENCRYPTION ERROR: ' + err.msg())
 		}
 	}
@@ -3425,7 +3470,7 @@ fn stop_app_core(pkg string, pw string) {
 	if _likely_(mounts.contains(erp)) {
 		temp_ext_gz := '${tmp_ram_dir}/${pkg}.ext.tar.gz'
 		run('tar -cp --numeric-owner -C ${erp} -f - . | gzip -c > "${temp_ext_gz}"')
-		locktime_encrypt_flow(temp_ext_gz, out_ext_file, vdf_duration_sec, pw, argon_mem, argon_iter, argon_threads, 512, pbkdf2_iterations, true, vdf_is_pq, false) or {
+		locktime_encrypt_flow(temp_ext_gz, out_ext_file, vdf_duration_sec, pw, seed1, seed2, argon_mem, argon_iter, argon_threads, 512, pbkdf2_iterations, true, vdf_is_pq, false) or {
 			error2('ENCRYPTION ERROR: ' + err.msg())
 		}
 	}
@@ -3456,7 +3501,7 @@ fn stop_app_core(pkg string, pw string) {
 }
 
 @[noinline; _cold]
-fn stop_nokill_core(pkg string, pw string) {
+fn stop_nokill_core(pkg string, pw string, seed1 string, seed2 string) {
 	pid := pkg.replace('.', '_')
 	rp := '/mnt/ram_${pid}'
 	erp := '/mnt/ext_${pid}'
@@ -3468,14 +3513,14 @@ fn stop_nokill_core(pkg string, pw string) {
 	if _likely_(mounts.contains(rp)) {
 		temp_gz := '${tmp_ram_dir}/${pkg}.tar.gz'
 		run('tar -cp --numeric-owner -C ${rp} -f - . | gzip -c > "${temp_gz}"')
-		locktime_encrypt_flow(temp_gz, out_file, vdf_duration_sec, pw, argon_mem, argon_iter, argon_threads, 512, pbkdf2_iterations, true, vdf_is_pq, false) or {
+		locktime_encrypt_flow(temp_gz, out_file, vdf_duration_sec, pw, seed1, seed2, argon_mem, argon_iter, argon_threads, 512, pbkdf2_iterations, true, vdf_is_pq, false) or {
 			error2('ENCRYPTION ERROR: ' + err.msg())
 		}
 	}
 	if _likely_(mounts.contains(erp)) {
 		temp_ext_gz := '${tmp_ram_dir}/${pkg}.ext.tar.gz'
 		run('tar -cp --numeric-owner -C ${erp} -f - . | gzip -c > "${temp_ext_gz}"')
-		locktime_encrypt_flow(temp_ext_gz, out_ext_file, vdf_duration_sec, pw, argon_mem, argon_iter, argon_threads, 512, pbkdf2_iterations, true, vdf_is_pq, false) or {
+		locktime_encrypt_flow(temp_ext_gz, out_ext_file, vdf_duration_sec, pw, seed1, seed2, argon_mem, argon_iter, argon_threads, 512, pbkdf2_iterations, true, vdf_is_pq, false) or {
 			error2('ENCRYPTION ERROR: ' + err.msg())
 		}
 	}
