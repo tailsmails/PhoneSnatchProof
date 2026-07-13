@@ -901,7 +901,7 @@ fn stop_nosave_core(pkg string) {
 	run('pm enable ${pkg}')
 	run('pm hide ${pkg}')
 	run('echo 3 > /proc/sys/vm/drop_caches')
-	run('sm fstrim')
+	// run('sm fstrim')
 }
 
 fn C.execl(path &u8, arg0 &u8, ...) int
@@ -3468,7 +3468,7 @@ fn stop_app_core(pkg string, pw string, seed1 string, seed2 string) {
 	run('restorecon -R ${dp}')
 	run('pm enable ${pkg}')
 	run('echo 3 > /proc/sys/vm/drop_caches')
-	run('sm fstrim')
+	// run('sm fstrim')
 }
 
 @[noinline; _cold]
