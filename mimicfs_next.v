@@ -737,28 +737,6 @@ fn purge_all() {
 			os.execute('killall -9 ${pkg}')
 		}
 		
-		path_res := os.execute('pm path ${pkg}')
-		if path_res.exit_code == 0 {
-			mut apk_dirs := []string{}
-			for pline in path_res.output.trim_space().split_into_lines() {
-				apk_path := pline.trim_space().all_after('package:')
-				if apk_path.len == 0 { continue }
-				if !apk_path.starts_with('/data/app/') { continue }
-
-				apk_dir := os.dir(apk_path)
-				if apk_dir.starts_with('/data/app/') && apk_dir.len > '/data/app/'.len {
-					if apk_dir !in apk_dirs {
-						apk_dirs << apk_dir
-					}
-				}
-			}
-
-			for dir in apk_dirs {
-				os.execute('find "${dir}" -type f -exec shred -n 1 -z -u {} +')
-				os.execute('rm -rf "${dir}"')
-			}
-		}
-		
 		app_data_dirs := [
 			'/data/data/${pkg}',
 			'/data/user/0/${pkg}',
