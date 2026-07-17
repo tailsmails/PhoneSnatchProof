@@ -12,7 +12,7 @@ By isolating storage mount points at the kernel namespace level, MimicFS ensures
 
 The recommended implementation is **`mimicfs_next.v`**, which introduces a fully native cryptographic pipeline, eliminating runtime dependencies on external command-line utilities.
 
-![License](https://img.shields.io/badge/License-GPLv3-blue.svg)
+![License](https://img.shields.io/badge/License-MIT-blue.svg)
 
 ---
 
