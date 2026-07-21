@@ -886,6 +886,7 @@ fn stop_nosave_core(pkg string) {
 	run('pm enable ${pkg}')
 	run('pm hide ${pkg}')
 	run('echo 3 > /proc/sys/vm/drop_caches')
+	// run('sm fstrim')
 }
 
 fn C.execl(path &u8, arg0 &u8, ...) int
@@ -1517,12 +1518,17 @@ fn event(e &tui.Event, x voidptr) {
 							back_to_termux()
 							return
 						}
-						master_pw := get_input_dialog('Enter Key', 'Password', true)
-						if master_pw == '' {
+						pw := get_input_dialog('Enter Key', 'Password', true)
+						if pw == '' {
 							back_to_termux()
 							return
 						}
-						pw, seed1, seed2 := derive_subkeys(master_pw)
+						seed1 := get_input_dialog('Enter Seed 1', 'Seed 1', true)
+						seed2 := get_input_dialog('Enter Seed 2', 'Seed 2', true)
+						if seed1 == '' || seed2 == '' {
+							back_to_termux()
+							return
+						}
 						back_to_termux()
 						start_app_core(pkg, pw, seed1, seed2)
 					}
@@ -1532,13 +1538,24 @@ fn event(e &tui.Event, x voidptr) {
 							back_to_termux()
 							return
 						}
-						master_pw := get_input_dialog('Verify Key', 'Password', true)
-						master_pw2 := get_input_dialog('Verify Key Again', 'Password', true)
-						if master_pw == '' || master_pw2 != master_pw {
+						pw := get_input_dialog('Verify Key', 'Password', true)
+						pw2 := get_input_dialog('Verify Key Again', 'Password', true)
+						if pw == '' || pw2 != pw {
 							back_to_termux()
 							return
 						}
-						pw, seed1, seed2 := derive_subkeys(master_pw)
+						seed1 := get_input_dialog('Enter Seed 1', 'Seed 1', true)
+						seed1_conf := get_input_dialog('Verify Seed 1', 'Seed 1 Again', true)
+						if seed1 == '' || seed1 != seed1_conf {
+							back_to_termux()
+							return
+						}
+						seed2 := get_input_dialog('Enter Seed 2', 'Seed 2', true)
+						seed2_conf := get_input_dialog('Verify Seed 2', 'Seed 2 Again', true)
+						if seed2 == '' || seed2 != seed2_conf {
+							back_to_termux()
+							return
+						}
 						back_to_termux()
 						stop_app_core(pkg, pw, seed1, seed2)
 					}
@@ -1590,13 +1607,25 @@ fn event(e &tui.Event, x voidptr) {
 							back_to_termux()
 							return
 						}
-						master_pw := get_input_dialog('Set Key', 'Encryption Password', true)
-						master_pw2 := get_input_dialog('Set Key Again', 'Encryption Password', true)
-						if master_pw == '' || master_pw2 != master_pw {
+						pw := get_input_dialog('Set Key', 'Encryption Password', true)
+						pw2 := get_input_dialog('Set Key Again', 'Encryption Password',
+							true)
+						if pw == '' || pw2 != pw {
 							back_to_termux()
 							return
 						}
-						pw, seed1, seed2 := derive_subkeys(master_pw)
+						seed1 := get_input_dialog('Enter Seed 1', 'Seed 1', true)
+						seed1_conf := get_input_dialog('Verify Seed 1', 'Seed 1 Again', true)
+						if seed1 == '' || seed1 != seed1_conf {
+							back_to_termux()
+							return
+						}
+						seed2 := get_input_dialog('Enter Seed 2', 'Seed 2', true)
+						seed2_conf := get_input_dialog('Verify Seed 2', 'Seed 2 Again', true)
+						if seed2 == '' || seed2 != seed2_conf {
+							back_to_termux()
+							return
+						}
 						back_to_termux()
 						stop_nokill_core(pkg, pw, seed1, seed2)
 					}
@@ -1656,13 +1685,24 @@ fn event(e &tui.Event, x voidptr) {
 						resize_app_tmpfs(pkg, delta.int(), ext)
 					}
 					14 {
-						master_pw := get_input_dialog('Verify Key', 'Encryption Password', true)
-						master_pw2 := get_input_dialog('Verify Key Again', 'Encryption Password', true)
-						if master_pw == '' || master_pw2 != master_pw {
+						pw := get_input_dialog('Verify Key', 'Encryption Password', true)
+						pw2 := get_input_dialog('Verify Key Again', 'Encryption Password', true)
+						if pw == '' || pw2 != pw {
 							back_to_termux()
 							return
 						}
-						pw, seed1, seed2 := derive_subkeys(master_pw)
+						seed1 := get_input_dialog('Verify Seed 1', 'Seed 1', true)
+						seed1_conf := get_input_dialog('Verify Seed 1 Again', 'Seed 1 Again', true)
+						if seed1 == '' || seed1 != seed1_conf {
+							back_to_termux()
+							return
+						}
+						seed2 := get_input_dialog('Verify Seed 2', 'Seed 2', true)
+						seed2_conf := get_input_dialog('Verify Seed 2 Again', 'Seed 2 Again', true)
+						if seed2 == '' || seed2 != seed2_conf {
+							back_to_termux()
+							return
+						}
 						back_to_termux()
 						lock_all_core(pw, seed1, seed2)
 					}
@@ -1764,11 +1804,15 @@ fn cli_mode(args []string) {
 			if !is_valid_pkg(pkg) {
 				fatal('Invalid package name')
 			}
-			master_pw := read_pw('Master Password: ')
-			if master_pw == '' {
+			pw := read_pw('Password: ')
+			if pw == '' {
 				fatal('Empty password')
 			}
-			pw, seed1, seed2 := derive_subkeys(master_pw)
+			seed1 := read_pw('Seed 1: ')
+			seed2 := read_pw('Seed 2: ')
+			if seed1 == '' || seed2 == '' {
+				fatal('Seeds cannot be empty')
+			}
 			exit(start_app_core(pkg, pw, seed1, seed2))
 		}
 		'stop' {
@@ -1779,15 +1823,24 @@ fn cli_mode(args []string) {
 			if !is_valid_pkg(pkg) {
 				fatal('Invalid package name')
 			}
-			master_pw := read_pw('Master Password: ')
-			if master_pw == '' {
+			pw := read_pw('Password: ')
+			if pw == '' {
 				fatal('Empty password')
 			}
-			master_pw2 := read_pw('Master Password again: ')
-			if master_pw != master_pw2 {
+			pw2 := read_pw('Password again: ')
+			if pw != pw2 {
 				fatal('Passwords do not match')
 			}
-			pw, seed1, seed2 := derive_subkeys(master_pw)
+			seed1 := read_pw('Seed 1: ')
+			seed1_conf := read_pw('Seed 1 Again: ')
+			if seed1 == '' || seed1 != seed1_conf {
+				fatal('Seed 1 mismatch or empty')
+			}
+			seed2 := read_pw('Seed 2: ')
+			seed2_conf := read_pw('Seed 2 Again: ')
+			if seed2 == '' || seed2 != seed2_conf {
+				fatal('Seed 2 mismatch or empty')
+			}
 			stop_app_core(pkg, pw, seed1, seed2)
 		}
 		'forcestop' {
@@ -1808,15 +1861,24 @@ fn cli_mode(args []string) {
 			if !is_valid_pkg(pkg) {
 				fatal('Invalid package name')
 			}
-			master_pw := read_pw('Master Password: ')
-			if master_pw == '' {
+			pw := read_pw('Password: ')
+			if pw == '' {
 				fatal('Empty password')
 			}
-			master_pw2 := read_pw('Master Password again: ')
-			if master_pw != master_pw2 {
+			pw2 := read_pw('Password again: ')
+			if pw != pw2 {
 				fatal('Passwords do not match')
 			}
-			pw, seed1, seed2 := derive_subkeys(master_pw)
+			seed1 := read_pw('Seed 1: ')
+			seed1_conf := read_pw('Seed 1 Again: ')
+			if seed1 == '' || seed1 != seed1_conf {
+				fatal('Seed 1 mismatch or empty')
+			}
+			seed2 := read_pw('Seed 2: ')
+			seed2_conf := read_pw('Seed 2 Again: ')
+			if seed2 == '' || seed2 != seed2_conf {
+				fatal('Seed 2 mismatch or empty')
+			}
 			stop_nokill_core(pkg, pw, seed1, seed2)
 		}
 		'remove' {
@@ -1858,15 +1920,24 @@ fn cli_mode(args []string) {
 			purge_all()
 		}
 		'lockall' {
-			master_pw := read_pw('Master Password: ')
-			if master_pw == '' {
+			pw := read_pw('Password: ')
+			if pw == '' {
 				fatal('Empty password')
 			}
-			master_pw2 := read_pw('Master Password again: ')
-			if master_pw != master_pw2 {
+			pw2 := read_pw('Current password again: ')
+			if pw != pw2 {
 				fatal('Passwords do not match')
 			}
-			pw, seed1, seed2 := derive_subkeys(master_pw)
+			seed1 := read_pw('Seed 1: ')
+			seed1_conf := read_pw('Seed 1 Again: ')
+			if seed1 == '' || seed1 != seed1_conf {
+				fatal('Seed 1 mismatch or empty')
+			}
+			seed2 := read_pw('Seed 2: ')
+			seed2_conf := read_pw('Seed 2 Again: ')
+			if seed2 == '' || seed2 != seed2_conf {
+				fatal('Seed 2 mismatch or empty')
+			}
 			lock_all_core(pw, seed1, seed2)
 		}
 		'resize' {
@@ -2592,13 +2663,6 @@ fn derive_seed2(seed_str string, w_bytes []u8, iter int) ![]u8 {
 	return derived
 }
 
-fn derive_subkeys(master_pw string) (string, string, string) {
-	pw_derived := sha3.sum512((master_pw + "::mimic_app_password").bytes()).hex()
-	seed1_derived := sha3.sum512((master_pw + "::mimic_seed1_domain").bytes()).hex()
-	seed2_derived := sha3.sum512((master_pw + "::mimic_seed2_domain").bytes()).hex()
-	return pw_derived, seed1_derived, seed2_derived
-}
-
 struct VdfParams {
 	n     big.Integer
 	t     u64
@@ -3188,7 +3252,7 @@ fn start_app_core(pkg string, pw string, seed1 string, seed2 string) int {
 		res_two := os.execute('du -sm ${safe_vf} 2>/dev/null')
 		if _likely_(res_two.exit_code == 0) {
 			parts := res_two.output.split('\t')
-			if _likely_(parts.len > 0) {
+			if parts.len > 0 {
 				val := parts[0].int()
 				if val > 0 {
 					needed_data = val * 5
@@ -3201,7 +3265,7 @@ fn start_app_core(pkg string, pw string, seed1 string, seed2 string) int {
 		res := os.execute('du -sm ${safe_evf} 2>/dev/null')
 		if _likely_(res.exit_code == 0) {
 			parts := res.output.split('\t')
-			if _likely_(parts.len > 0) {
+			if parts.len > 0 {
 				val := parts[0].int()
 				if val > 0 {
 					needed_storage = val * 5
@@ -3389,6 +3453,7 @@ fn stop_app_core(pkg string, pw string, seed1 string, seed2 string) {
 	run('restorecon -R ${dp}')
 	run('pm enable ${pkg}')
 	run('echo 3 > /proc/sys/vm/drop_caches')
+	// run('sm fstrim')
 }
 
 @[noinline; _cold]
