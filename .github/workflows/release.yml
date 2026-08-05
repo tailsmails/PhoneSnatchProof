@@ -1,0 +1,86 @@
+name: Auto Release
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  APP_NAME: psp
+  EXTRA_FLAGS: ""
+
+jobs:
+  build:
+    runs-on: ${{ matrix.runner }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: android-arm64
+            runner: ubuntu-latest
+            setup_cmd: ""
+            build_cmd: |
+              V_ROOT=$(dirname $(readlink -f $(which v)))
+              v $EXTRA_FLAGS -d no_backtrace -enable-globals -autofree -os linux -o $APP_NAME.c .
+              $ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android28-clang -O3 -fPIE -pie -U__ANDROID__ -I "$V_ROOT/thirdparty/cJSON" $APP_NAME.c "$V_ROOT/thirdparty/cJSON/cJSON.c" -o $APP_NAME$SUFFIX -lm
+            artifact_suffix: -android-arm64
+
+          - target: android-arm
+            runner: ubuntu-latest
+            setup_cmd: ""
+            build_cmd: |
+              V_ROOT=$(dirname $(readlink -f $(which v)))
+              v $EXTRA_FLAGS -d no_backtrace -enable-globals -autofree -os linux -o $APP_NAME.c .
+              $ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi28-clang -O3 -fPIE -pie -U__ANDROID__ -I "$V_ROOT/thirdparty/cJSON" $APP_NAME.c "$V_ROOT/thirdparty/cJSON/cJSON.c" -o $APP_NAME$SUFFIX -lm
+            artifact_suffix: -android-arm
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install V
+        uses: vlang/setup-v@v1
+        with:
+          check-latest: true
+
+      - name: Setup Compiler Dependencies
+        if: matrix.setup_cmd != ''
+        run: ${{ matrix.setup_cmd }}
+
+      - name: Setup Dependencies
+        run:
+
+      - name: Build binary
+        run: ${{ matrix.build_cmd }}
+        env:
+          SUFFIX: ${{ matrix.artifact_suffix }}
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP_NAME }}${{ matrix.artifact_suffix }}
+          path: ${{ env.APP_NAME }}${{ matrix.artifact_suffix }}
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+          merge-multiple: true
+
+      - name: Upload to Release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: build-${{ github.run_number }}
+          name: Build ${{ github.run_number }}
+          artifacts: ./artifacts/*
+          generateReleaseNotes: true
+          allowUpdates: true
+          token: ${{ secrets.GITHUB_TOKEN }}
