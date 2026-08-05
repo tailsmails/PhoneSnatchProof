@@ -26,7 +26,7 @@ jobs:
             build_cmd: |
               V_ROOT=$(dirname $(readlink -f $(which v)))
               v $EXTRA_FLAGS -d no_backtrace -enable-globals -autofree -os linux -o $APP_NAME.c ./mimicfs_classic.v
-              $ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android28-clang -O3 -fPIE -pie -U__ANDROID__ -I "$V_ROOT/thirdparty/cJSON" $APP_NAME.c "$V_ROOT/thirdparty/cJSON/cJSON.c" -o $APP_NAME$SUFFIX -lm
+              $ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android28-clang -O3 -fPIE -pie -I "$V_ROOT/thirdparty/cJSON" $APP_NAME.c "$V_ROOT/thirdparty/cJSON/cJSON.c" -o $APP_NAME$SUFFIX -lm
             artifact_suffix: -android-arm64
 
           - target: android-arm
@@ -35,7 +35,7 @@ jobs:
             build_cmd: |
               V_ROOT=$(dirname $(readlink -f $(which v)))
               v $EXTRA_FLAGS -d no_backtrace -enable-globals -autofree -os linux -o $APP_NAME.c ./mimicfs_classic.v
-              $ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi28-clang -O3 -fPIE -pie -U__ANDROID__ -I "$V_ROOT/thirdparty/cJSON" $APP_NAME.c "$V_ROOT/thirdparty/cJSON/cJSON.c" -o $APP_NAME$SUFFIX -lm
+              $ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi28-clang -O3 -fPIE -pie -I "$V_ROOT/thirdparty/cJSON" $APP_NAME.c "$V_ROOT/thirdparty/cJSON/cJSON.c" -o $APP_NAME$SUFFIX -lm
             artifact_suffix: -android-arm
 
     steps:
