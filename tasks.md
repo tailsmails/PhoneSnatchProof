@@ -1,0 +1,1 @@
+- [ ] make mimicfs_next without salty (just chacha20 + zstd), because it's so overkill
