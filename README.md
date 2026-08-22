@@ -51,12 +51,7 @@ MimicFS preemptively neutralizes Android's logging mechanisms by mounting read-o
 
 ---
 
-## Security Features
-
-### Watchdog & Panic Triggers
-*   **Magnetic Tamper Detection:** Continuously monitors the magnetometer. A sudden spike in magnetic flux (indicating a magnetic case opening or forensic imaging hardware) triggers an immediate lock-down.
-*   **Dead Man's Timer:** Configurable inactivity timeout that automatically syncs, wipes, and unmounts all active containers.
-*   **Panic Password:** Entering a pre-configured distress password during authentication triggers the **Emergency Purge** protocol.
+## S Features
 
 ### Emergency Purge
 When initiated, this protocol performs a destructive cleanup:
@@ -131,7 +126,6 @@ tsu -c ./mimicfs
 | `forcestop <pkg>` | Kills the app and wipes RAM *without* saving changes. |
 | `extc <pkg> <path>` | Mounts an arbitrary directory (e.g., `/sdcard/DCIM`) into RAM. |
 | `lockall` | Immediately syncs and stops all active containers. |
-| `daemon` | Starts the background watchdog (Auto-lock/Panic/Magnetometer). |
 | `despy` | Activates hardware monitoring and USB killer. |
 | `deepclean` | Wipes free space by filling storage with random data. |
 | `purge` | Initiates the Emergency Purge protocol. |
